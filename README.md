@@ -1,29 +1,26 @@
 # actix-csrf-middleware
 
-CSRF protection middleware for [Actix Web](https://github.com/actix/actix-web) applications. Supports both double submit
-cookie and synchronizer token patterns. Flexible, easy to
+CSRF protection middleware for [Actix Web](https://github.com/actix/actix-web) applications. Supports double submit
+cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to
 configure, and includes test coverage for common attacks and edge cases.
 
 - Double submit cookie or actix session token storage
 - Handles JSON and form submissions from the box
-- Utils for implementing Synchronizer Token Pattern
 - Configurable cookie name, header name, form field, and error handler
 - Per-path CSRF exclusion (skip_for)
 
 ## Example: Basic Usage
 
-### Simple middleware
+### Double Submit Cookie
 
 ```rust
 use actix_web::{web, App, HttpServer, HttpResponse};
-use actix_csrf_middleware::{
-    CsrfDoubleSubmitCookieMiddleware, CsrfDoubleSubmitCookieConfig, CsrfStorage, CsrfToken,
-};
+use actix_csrf_middleware::{CsrfMiddleware, CsrfToken};
 
 fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
-            .wrap(CsrfDoubleSubmitCookieMiddleware::default())
+            .wrap(CsrfMiddleware::default())
             .route("/form", web::get().to(|csrf: CsrfToken| async move {
                 // Inject CSRF token to your form
                 HttpResponse::Ok().body(format!("token:{}", csrf.0))
@@ -38,21 +35,22 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
-### With actix-session
+### Synchronizer Token (actix-session)
 
 Enable the session feature and wrap with session middleware (see [actix-session](https://docs.rs/actix-session)):
 
 ```rust
+use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig, CsrfPattern, CsrfToken};
 use actix_session::{SessionMiddleware, storage::CookieSessionStore};
 
 fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
-            .wrap(SessionMiddleware::new(CookieSessionStore::default(), your_secret_key()))
-            .wrap(CsrfDoubleSubmitCookieMiddleware::new(CsrfDoubleSubmitCookieConfig {
-                storage: CsrfStorage::Session,
+            .wrap(CsrfMiddleware::new(CsrfMiddlewareConfig {
+                storage: CsrfPattern::SynchronizerToken,
                 ..Default::default()
             }))
+            .wrap(SessionMiddleware::new(CookieSessionStore::default(), your_secret_key()))
         // Your routes...
     })
         .bind(("127.0.0.1", 8080))?

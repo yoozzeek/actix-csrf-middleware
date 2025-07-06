@@ -1,8 +1,7 @@
 use actix_csrf_middleware::{
-    CsrfDoubleSubmitCookieConfig, CsrfDoubleSubmitCookieMiddleware, CsrfToken, DEFAULT_COOKIE_NAME,
-    DEFAULT_HEADER,
+    CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken, DEFAULT_COOKIE_NAME, DEFAULT_HEADER,
 };
-#[cfg(feature = "session")]
+#[cfg(feature = "actix-session")]
 use actix_session::{
     SessionMiddleware, config::CookieContentSecurity, storage::CookieSessionStore,
 };
@@ -27,7 +26,7 @@ fn configure_routes(cfg: &mut web::ServiceConfig) {
     );
 }
 
-#[cfg(feature = "session")]
+#[cfg(feature = "actix-session")]
 fn get_session_middleware() -> SessionMiddleware<CookieSessionStore> {
     SessionMiddleware::builder(CookieSessionStore::default(), test_key())
         .cookie_content_security(CookieContentSecurity::Private)
@@ -39,10 +38,10 @@ fn get_session_middleware() -> SessionMiddleware<CookieSessionStore> {
 
 #[actix_rt::main]
 async fn main() {
-    let cfg = CsrfDoubleSubmitCookieConfig::default();
+    let cfg = CsrfMiddlewareConfig::default();
     let app = test::init_service({
-        let app = App::new().wrap(CsrfDoubleSubmitCookieMiddleware::new(cfg));
-        #[cfg(feature = "session")]
+        let app = App::new().wrap(CsrfMiddleware::new(cfg));
+        #[cfg(feature = "actix-session")]
         let app = app.wrap(get_session_middleware());
         app.configure(configure_routes)
     })
@@ -56,7 +55,7 @@ async fn main() {
         let req = test::TestRequest::get().uri("/form").to_request();
         let resp = test::call_service(&app, req).await;
 
-        let target_cookie_name = if cfg!(feature = "session") {
+        let target_cookie_name = if cfg!(feature = "actix-session") {
             "id"
         } else {
             DEFAULT_COOKIE_NAME

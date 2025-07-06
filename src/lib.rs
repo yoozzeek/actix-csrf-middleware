@@ -1,17 +1,17 @@
+#[cfg(feature = "actix-session")]
+use actix_session::SessionExt;
 use actix_web::body::{EitherBody, MessageBody};
 use actix_web::cookie::{Cookie, SameSite};
 use actix_web::dev::forward_ready;
-use actix_web::http::{header, Method};
+use actix_web::http::{Method, header};
 use actix_web::web::BytesMut;
 use actix_web::{
-    dev::{Service, ServiceRequest, ServiceResponse, Transform}, Error, FromRequest, HttpMessage, HttpRequest,
-    HttpResponse,
+    Error, FromRequest, HttpMessage, HttpRequest, HttpResponse,
+    dev::{Service, ServiceRequest, ServiceResponse, Transform},
 };
-#[cfg(feature = "session")]
-use actix_session::SessionExt;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{
-    future::{err, ok, LocalBoxFuture, Ready},
+    future::{LocalBoxFuture, Ready, err, ok},
     stream::StreamExt,
 };
 use rand::RngCore;
@@ -25,15 +25,15 @@ pub const DEFAULT_HEADER: &str = "X-CSRF-Token";
 const TOKEN_LEN: usize = 32;
 
 #[derive(Clone)]
-pub enum CsrfStorage {
-    #[cfg(feature = "session")]
-    Session,
-    Cookie,
+pub enum CsrfPattern {
+    #[cfg(feature = "actix-session")]
+    SynchronizerToken,
+    DoubleSubmitCookie,
 }
 
 #[derive(Clone)]
-pub struct CsrfDoubleSubmitCookieConfig {
-    pub storage: CsrfStorage,
+pub struct CsrfMiddlewareConfig {
+    pub pattern: CsrfPattern,
     pub cookie_name: String,
     pub form_field: String,
     pub header_name: String,
@@ -43,13 +43,13 @@ pub struct CsrfDoubleSubmitCookieConfig {
     pub on_error: Rc<dyn Fn(&HttpRequest) -> HttpResponse>,
 }
 
-impl Default for CsrfDoubleSubmitCookieConfig {
+impl Default for CsrfMiddlewareConfig {
     fn default() -> Self {
-        CsrfDoubleSubmitCookieConfig {
-            #[cfg(feature = "session")]
-            storage: CsrfStorage::Session,
-            #[cfg(not(feature = "session"))]
-            storage: CsrfStorage::Cookie,
+        CsrfMiddlewareConfig {
+            #[cfg(feature = "actix-session")]
+            pattern: CsrfPattern::SynchronizerToken,
+            #[cfg(not(feature = "actix-session"))]
+            pattern: CsrfPattern::DoubleSubmitCookie,
             cookie_name: DEFAULT_COOKIE_NAME.into(),
             form_field: DEFAULT_FORM_FIELD.into(),
             header_name: DEFAULT_HEADER.into(),
@@ -61,50 +61,50 @@ impl Default for CsrfDoubleSubmitCookieConfig {
     }
 }
 
-pub struct CsrfDoubleSubmitCookieMiddleware {
-    config: CsrfDoubleSubmitCookieConfig,
+pub struct CsrfMiddleware {
+    config: CsrfMiddlewareConfig,
 }
 
-impl CsrfDoubleSubmitCookieMiddleware {
-    pub fn new(config: CsrfDoubleSubmitCookieConfig) -> Self {
+impl CsrfMiddleware {
+    pub fn new(config: CsrfMiddlewareConfig) -> Self {
         Self { config }
     }
 }
 
-impl Default for CsrfDoubleSubmitCookieMiddleware {
+impl Default for CsrfMiddleware {
     fn default() -> Self {
-        Self::new(CsrfDoubleSubmitCookieConfig::default())
+        Self::new(CsrfMiddlewareConfig::default())
     }
 }
 
-impl<S, B> Transform<S, ServiceRequest> for CsrfDoubleSubmitCookieMiddleware
+impl<S, B> Transform<S, ServiceRequest> for CsrfMiddleware
 where
-    S: Service<ServiceRequest, Response=ServiceResponse<B>, Error=Error> + 'static,
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
     S::Future: 'static,
     B: MessageBody + 'static,
 {
     type Response = ServiceResponse<EitherBody<B>>;
     type Error = Error;
-    type Transform = CsrfDoubleSubmitCookieMiddlewareImpl<S>;
+    type Transform = CsrfMiddlewareImpl<S>;
     type InitError = ();
     type Future = Ready<Result<Self::Transform, Self::InitError>>;
 
     fn new_transform(&self, service: S) -> Self::Future {
-        ok(CsrfDoubleSubmitCookieMiddlewareImpl {
+        ok(CsrfMiddlewareImpl {
             service: Rc::new(service),
             config: self.config.clone(),
         })
     }
 }
 
-pub struct CsrfDoubleSubmitCookieMiddlewareImpl<S> {
+pub struct CsrfMiddlewareImpl<S> {
     service: Rc<S>,
-    config: CsrfDoubleSubmitCookieConfig,
+    config: CsrfMiddlewareConfig,
 }
 
-impl<S, B> Service<ServiceRequest> for CsrfDoubleSubmitCookieMiddlewareImpl<S>
+impl<S, B> Service<ServiceRequest> for CsrfMiddlewareImpl<S>
 where
-    S: Service<ServiceRequest, Response=ServiceResponse<B>, Error=Error> + 'static,
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
     S::Future: 'static,
     B: MessageBody + 'static,
 {
@@ -126,11 +126,14 @@ where
             return Box::pin(async move { Ok(fut.await?.map_into_left_body()) });
         }
 
-        let (token, store_token): (String, Option<String>) = match self.config.storage {
-            #[cfg(feature = "session")]
-            CsrfStorage::Session => {
+        let (token, store_token): (String, Option<String>) = match self.config.pattern {
+            #[cfg(feature = "actix-session")]
+            CsrfPattern::SynchronizerToken => {
                 let session = req.get_session();
-                let found = session.get::<String>(&self.config.cookie_name).ok().flatten();
+                let found = session
+                    .get::<String>(&self.config.cookie_name)
+                    .ok()
+                    .flatten();
                 match found {
                     Some(tok) => (tok, None),
                     None => {
@@ -139,7 +142,7 @@ where
                     }
                 }
             }
-            CsrfStorage::Cookie => {
+            CsrfPattern::DoubleSubmitCookie => {
                 let found = req
                     .cookie(&self.config.cookie_name)
                     .map(|c| c.value().to_string());
@@ -155,7 +158,7 @@ where
 
         req.extensions_mut().insert(CsrfToken(token.clone()));
 
-        #[cfg(feature = "session")]
+        #[cfg(feature = "actix-session")]
         let session = req.get_session();
 
         let is_mutating = matches!(
@@ -171,12 +174,12 @@ where
             return Box::pin(async move {
                 let mut res = fut.await?.map_into_left_body();
                 if let Some(new_token) = store_token {
-                    match config.storage {
-                        #[cfg(feature = "session")]
-                        CsrfStorage::Session => {
+                    match config.pattern {
+                        #[cfg(feature = "actix-session")]
+                        CsrfPattern::SynchronizerToken => {
                             session.insert(&cookie_name, new_token)?;
                         }
-                        CsrfStorage::Cookie => {
+                        CsrfPattern::DoubleSubmitCookie => {
                             let cookie = Cookie::build(&config.cookie_name, &new_token)
                                 .http_only(true)
                                 .secure(config.secure)
@@ -202,14 +205,14 @@ where
                 .and_then(|hv| hv.to_str().ok());
 
             let mut valid = header_token
-                .map(|header_token| eq_csrf_tokens(&token, header_token))
+                .map(|header_token| eq_tokens(&token, header_token))
                 .unwrap_or(false);
 
             if !valid {
                 if let Some(body_token) =
                     try_to_extract_token_from_body(&http_req, &mut payload, &config).await
                 {
-                    valid = eq_csrf_tokens(&token, &body_token);
+                    valid = eq_tokens(&token, &body_token);
                 }
             }
 
@@ -224,12 +227,12 @@ where
             let status = res.status().as_u16();
             if matches!(status, 200 | 201 | 202 | 204) {
                 let new_token = generate_token();
-                match config.storage {
-                    #[cfg(feature = "session")]
-                    CsrfStorage::Session => {
+                match config.pattern {
+                    #[cfg(feature = "actix-session")]
+                    CsrfPattern::SynchronizerToken => {
                         session.insert(&config.cookie_name, new_token)?;
                     }
-                    CsrfStorage::Cookie => {
+                    CsrfPattern::DoubleSubmitCookie => {
                         let cookie = Cookie::build(&config.cookie_name, &new_token)
                             .http_only(true)
                             .secure(config.secure)
@@ -248,7 +251,7 @@ where
 async fn try_to_extract_token_from_body(
     req: &HttpRequest,
     payload: &mut actix_web::dev::Payload,
-    config: &CsrfDoubleSubmitCookieConfig,
+    config: &CsrfMiddlewareConfig,
 ) -> Option<String> {
     let mut body = BytesMut::new();
     while let Some(chunk) = payload.next().await {
@@ -284,7 +287,7 @@ pub fn generate_token() -> String {
     URL_SAFE_NO_PAD.encode(buf)
 }
 
-pub fn eq_csrf_tokens(a: &str, b: &str) -> bool {
+pub fn eq_tokens(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }

@@ -1,10 +1,10 @@
 use actix_csrf_middleware::{
-    CsrfDoubleSubmitCookieConfig, CsrfDoubleSubmitCookieMiddleware, CsrfStorage, CsrfToken,
-    DEFAULT_COOKIE_NAME, DEFAULT_FORM_FIELD, DEFAULT_HEADER,
+    CsrfMiddleware, CsrfMiddlewareConfig, CsrfPattern, CsrfToken, DEFAULT_COOKIE_NAME,
+    DEFAULT_FORM_FIELD, DEFAULT_HEADER,
 };
 use actix_http::Request;
 use actix_http::body::{BoxBody, EitherBody};
-#[cfg(feature = "session")]
+#[cfg(feature = "actix-session")]
 use actix_session::{
     SessionMiddleware, config::CookieContentSecurity, storage::CookieSessionStore,
 };
@@ -20,12 +20,12 @@ fn test_key() -> Key {
 }
 
 async fn build_app(
-    cfg: CsrfDoubleSubmitCookieConfig,
+    cfg: CsrfMiddlewareConfig,
 ) -> impl Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>
 {
     test::init_service({
-        let app = App::new().wrap(CsrfDoubleSubmitCookieMiddleware::new(cfg));
-        #[cfg(feature = "session")]
+        let app = App::new().wrap(CsrfMiddleware::new(cfg));
+        #[cfg(feature = "actix-session")]
         let app = app.wrap(get_session_middleware());
         app.configure(configure_routes)
     })
@@ -56,7 +56,7 @@ where
     let req = test::TestRequest::get().uri("/form").to_request();
     let resp = test::call_service(&app, req).await;
 
-    let target_cookie_name = if cfg!(feature = "session") {
+    let target_cookie_name = if cfg!(feature = "actix-session") {
         "id"
     } else if custom_name.is_some() {
         custom_name.unwrap()
@@ -77,7 +77,7 @@ where
     (token, cookie)
 }
 
-#[cfg(feature = "session")]
+#[cfg(feature = "actix-session")]
 fn get_session_middleware() -> SessionMiddleware<CookieSessionStore> {
     SessionMiddleware::builder(CookieSessionStore::default(), test_key())
         .cookie_content_security(CookieContentSecurity::Private)
@@ -89,7 +89,7 @@ fn get_session_middleware() -> SessionMiddleware<CookieSessionStore> {
 
 #[actix_web::test]
 async fn valid_csrf_header() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (token, cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -102,7 +102,7 @@ async fn valid_csrf_header() {
 
 #[actix_web::test]
 async fn valid_csrf_form_field() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (token, cookie) = { token_cookie(&app, None).await };
 
     let form = format!("csrf_token={}", &token);
@@ -118,7 +118,7 @@ async fn valid_csrf_form_field() {
 
 #[actix_web::test]
 async fn valid_csrf_json_payload() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (token, cookie) = { token_cookie(&app, None).await };
 
     let req = test::TestRequest::post()
@@ -135,7 +135,7 @@ async fn valid_csrf_json_payload() {
 
 #[actix_web::test]
 async fn invalid_csrf_header() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (_token, cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -148,7 +148,7 @@ async fn invalid_csrf_header() {
 
 #[actix_web::test]
 async fn invalid_csrf_form_field() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (_token, cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -162,7 +162,7 @@ async fn invalid_csrf_form_field() {
 
 #[actix_web::test]
 async fn invalid_csrf_json_payload() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (_token, cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -177,7 +177,7 @@ async fn invalid_csrf_json_payload() {
 
 #[actix_web::test]
 async fn missing_csrf_token() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (_token, cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -189,7 +189,7 @@ async fn missing_csrf_token() {
 
 #[actix_web::test]
 async fn token_refresh_on_successful_mutation() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (token1, cookie) = { token_cookie(&app, None).await };
 
     // POST with valid token
@@ -210,11 +210,11 @@ async fn token_refresh_on_successful_mutation() {
 async fn custom_config_header_name() {
     const HEADER_NAME: &str = "custom-header";
 
-    let cfg = CsrfDoubleSubmitCookieConfig {
-        #[cfg(feature = "session")]
-        storage: CsrfStorage::Session,
-        #[cfg(not(feature = "session"))]
-        storage: CsrfStorage::Cookie,
+    let cfg = CsrfMiddlewareConfig {
+        #[cfg(feature = "actix-session")]
+        pattern: CsrfPattern::SynchronizerToken,
+        #[cfg(not(feature = "actix-session"))]
+        pattern: CsrfPattern::DoubleSubmitCookie,
         cookie_name: DEFAULT_COOKIE_NAME.to_string(),
         form_field: "myfield".to_string(),
         header_name: HEADER_NAME.to_string(),
@@ -239,11 +239,11 @@ async fn custom_config_header_name() {
 async fn custom_config_cookie_name() {
     const COOKIE_NAME: &str = "custom-cookie";
 
-    let cfg = CsrfDoubleSubmitCookieConfig {
-        #[cfg(feature = "session")]
-        storage: CsrfStorage::Session,
-        #[cfg(not(feature = "session"))]
-        storage: CsrfStorage::Cookie,
+    let cfg = CsrfMiddlewareConfig {
+        #[cfg(feature = "actix-session")]
+        pattern: CsrfPattern::SynchronizerToken,
+        #[cfg(not(feature = "actix-session"))]
+        pattern: CsrfPattern::DoubleSubmitCookie,
         cookie_name: COOKIE_NAME.to_string(),
         form_field: DEFAULT_FORM_FIELD.to_string(),
         header_name: DEFAULT_HEADER.to_string(),
@@ -267,11 +267,11 @@ async fn custom_config_cookie_name() {
 async fn custom_config_form_field_name() {
     const FIELD_NAME: &str = "custom-cookie";
 
-    let cfg = CsrfDoubleSubmitCookieConfig {
-        #[cfg(feature = "session")]
-        storage: CsrfStorage::Session,
-        #[cfg(not(feature = "session"))]
-        storage: CsrfStorage::Cookie,
+    let cfg = CsrfMiddlewareConfig {
+        #[cfg(feature = "actix-session")]
+        pattern: CsrfPattern::SynchronizerToken,
+        #[cfg(not(feature = "actix-session"))]
+        pattern: CsrfPattern::DoubleSubmitCookie,
         cookie_name: DEFAULT_COOKIE_NAME.to_string(),
         form_field: FIELD_NAME.to_string(),
         header_name: "myheader".to_string(),
@@ -296,7 +296,7 @@ async fn custom_config_form_field_name() {
 
 #[actix_web::test]
 async fn handles_large_chunked_body() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (token, cookie) = { token_cookie(&app, None).await };
 
     let large = "a".repeat(1024 * 1024);
@@ -313,7 +313,7 @@ async fn handles_large_chunked_body() {
 
 #[actix_web::test]
 async fn handles_malformed_json_body() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (_token, cookie) = { token_cookie(&app, None).await };
 
     let req = test::TestRequest::post()
@@ -328,7 +328,7 @@ async fn handles_malformed_json_body() {
 
 #[actix_web::test]
 async fn token_double_submit_and_mismatch() {
-    let app = build_app(CsrfDoubleSubmitCookieConfig::default()).await;
+    let app = build_app(CsrfMiddlewareConfig::default()).await;
     let (token, cookie) = { token_cookie(&app, None).await };
 
     // Double submit: header matches, body is wrong (should succeed)

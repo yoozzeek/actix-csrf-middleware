@@ -7,7 +7,6 @@ edition = "2024"
 crate-type = ["rlib"]
 
 [features]
-default = []
 session = ["actix-session"]
 
 [dependencies]
