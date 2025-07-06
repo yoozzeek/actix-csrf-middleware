@@ -6,7 +6,7 @@ configure, and includes test coverage for common attacks and edge cases.
 
 - Double submit cookie or actix session token storage
 - Handles JSON and form submissions
-- Configurable cookie name, header name, form field, and error handler
+- Configurable cookie, header name, form field, and error handler
 - Per-path CSRF exclusion (skip_for)
 
 ## Example: Basic Usage
@@ -14,6 +14,15 @@ configure, and includes test coverage for common attacks and edge cases.
 ### Double Submit Cookie
 
 With default configuration `CsrfMiddleware` uses double submit cookie pattern.
+
+Dependencies:
+
+```
+[dependencies]
+actix-csrf-middleware = "0.2"
+```
+
+Code:
 
 ```rust
 use actix_web::{web, App, HttpServer, HttpResponse};
@@ -39,7 +48,17 @@ fn main() -> std::io::Result<()> {
 
 ### Synchronizer Token (actix-session)
 
-Enable the session feature and wrap with session middleware (see [actix-session](https://docs.rs/actix-session)):
+To enable the synchronizer token pattern activate session feature and wrap with session middleware (
+see [actix-session](https://docs.rs/actix-session)):
+
+Dependencies:
+
+```
+[dependencies]
+actix-csrf-middleware = { version = "0.2", features = ["session"] }
+```
+
+Code:
 
 ```rust
 use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig, CsrfPattern, CsrfToken};
@@ -84,7 +103,8 @@ fn build_custom_csrf_config() {
 ## Security
 
 > This code is implemented
-> following [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+>
+following [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
 > It uses simple and robust double submit cookie pattern.
 
 - Token is 256-bit, base64url encoded, cryptographically secure random
