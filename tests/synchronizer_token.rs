@@ -1,95 +1,19 @@
+mod common;
+
 use actix_csrf_middleware::{
-    CsrfMiddleware, CsrfMiddlewareConfig, CsrfPattern, CsrfToken, DEFAULT_COOKIE_NAME,
-    DEFAULT_FORM_FIELD, DEFAULT_HEADER,
+    CsrfMiddlewareConfig, CsrfPattern, DEFAULT_COOKIE_NAME, DEFAULT_FORM_FIELD, DEFAULT_HEADER,
 };
-use actix_http::Request;
-use actix_http::body::{BoxBody, EitherBody};
-#[cfg(feature = "actix-session")]
-use actix_session::{
-    SessionMiddleware, config::CookieContentSecurity, storage::CookieSessionStore,
-};
-use actix_web::cookie::{Cookie, Key, SameSite};
-use actix_web::dev::{Service, ServiceResponse};
+use actix_web::cookie::SameSite;
 use actix_web::http::header::ContentType;
-use actix_web::{App, HttpResponse, test, web};
+use actix_web::{HttpResponse, test};
+use common::*;
 use serde_json::json;
 use std::rc::Rc;
 
-fn test_key() -> Key {
-    Key::generate()
-}
-
-async fn build_app(
-    cfg: CsrfMiddlewareConfig,
-) -> impl Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>
-{
-    test::init_service({
-        let app = App::new().wrap(CsrfMiddleware::new(cfg));
-        #[cfg(feature = "actix-session")]
-        let app = app.wrap(get_session_middleware());
-        app.configure(configure_routes)
-    })
-    .await
-}
-
-fn configure_routes(cfg: &mut web::ServiceConfig) {
-    cfg.route(
-        "/form",
-        web::get().to(|csrf: CsrfToken| async move {
-            HttpResponse::Ok().body(format!("token:{}", csrf.0))
-        }),
-    )
-    .route(
-        "/submit",
-        web::post().to(|_csrf: CsrfToken| async move { HttpResponse::Ok().body("OK") }),
-    )
-    .route(
-        "/submit_get",
-        web::get().to(|| async move { HttpResponse::Ok().body("GET_OK") }),
-    );
-}
-
-async fn token_cookie<S>(app: &S, custom_name: Option<&str>) -> (String, Cookie<'static>)
-where
-    S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
-{
-    let req = test::TestRequest::get().uri("/form").to_request();
-    let resp = test::call_service(&app, req).await;
-
-    let target_cookie_name = if cfg!(feature = "actix-session") {
-        "id"
-    } else if custom_name.is_some() {
-        custom_name.unwrap()
-    } else {
-        DEFAULT_COOKIE_NAME
-    };
-    let cookie = resp
-        .response()
-        .cookies()
-        .find(|c| c.name() == target_cookie_name)
-        .map(|c| c.into_owned())
-        .unwrap();
-
-    let body = test::read_body(resp).await;
-    let token = String::from_utf8(body.to_vec()).unwrap();
-    let token = token.strip_prefix("token:").unwrap().to_string();
-
-    (token, cookie)
-}
-
 #[cfg(feature = "actix-session")]
-fn get_session_middleware() -> SessionMiddleware<CookieSessionStore> {
-    SessionMiddleware::builder(CookieSessionStore::default(), test_key())
-        .cookie_content_security(CookieContentSecurity::Private)
-        .cookie_secure(true)
-        .cookie_http_only(true)
-        .cookie_same_site(SameSite::Strict)
-        .build()
-}
-
 #[actix_web::test]
 async fn valid_csrf_header() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (token, cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -100,9 +24,10 @@ async fn valid_csrf_header() {
     assert!(resp.status().is_success());
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn valid_csrf_form_field() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (token, cookie) = { token_cookie(&app, None).await };
 
     let form = format!("csrf_token={}", &token);
@@ -116,9 +41,10 @@ async fn valid_csrf_form_field() {
     assert!(resp.status().is_success());
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn valid_csrf_json_payload() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (token, cookie) = { token_cookie(&app, None).await };
 
     let req = test::TestRequest::post()
@@ -133,9 +59,10 @@ async fn valid_csrf_json_payload() {
     assert!(resp.status().is_success());
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn invalid_csrf_header() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (_token, cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -146,9 +73,10 @@ async fn invalid_csrf_header() {
     assert_eq!(resp.status(), 403);
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn invalid_csrf_form_field() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (_token, cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -160,9 +88,10 @@ async fn invalid_csrf_form_field() {
     assert_eq!(resp.status(), 403);
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn invalid_csrf_json_payload() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (_token, cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -175,9 +104,10 @@ async fn invalid_csrf_json_payload() {
     assert_eq!(resp.status(), 403);
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn missing_csrf_token() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (_token, cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -187,9 +117,10 @@ async fn missing_csrf_token() {
     assert_eq!(resp.status(), 403);
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn token_refresh_on_successful_mutation() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (token1, cookie) = { token_cookie(&app, None).await };
 
     // POST with valid token
@@ -206,15 +137,13 @@ async fn token_refresh_on_successful_mutation() {
     assert_ne!(token1, new_token, "Token should be refreshed after POST");
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn custom_config_header_name() {
     const HEADER_NAME: &str = "custom-header";
 
     let cfg = CsrfMiddlewareConfig {
-        #[cfg(feature = "actix-session")]
         pattern: CsrfPattern::SynchronizerToken,
-        #[cfg(not(feature = "actix-session"))]
-        pattern: CsrfPattern::DoubleSubmitCookie,
         cookie_name: DEFAULT_COOKIE_NAME.to_string(),
         form_field: "myfield".to_string(),
         header_name: HEADER_NAME.to_string(),
@@ -223,7 +152,7 @@ async fn custom_config_header_name() {
         skip_for: vec![],
         on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
     };
-    let app = build_app(cfg).await;
+    let app = build_app(Some(cfg)).await;
     let (token, cookie) = { token_cookie(&app, None).await };
 
     let req = test::TestRequest::post()
@@ -235,15 +164,13 @@ async fn custom_config_header_name() {
     assert!(resp.status().is_success());
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn custom_config_cookie_name() {
     const COOKIE_NAME: &str = "custom-cookie";
 
     let cfg = CsrfMiddlewareConfig {
-        #[cfg(feature = "actix-session")]
         pattern: CsrfPattern::SynchronizerToken,
-        #[cfg(not(feature = "actix-session"))]
-        pattern: CsrfPattern::DoubleSubmitCookie,
         cookie_name: COOKIE_NAME.to_string(),
         form_field: DEFAULT_FORM_FIELD.to_string(),
         header_name: DEFAULT_HEADER.to_string(),
@@ -252,8 +179,8 @@ async fn custom_config_cookie_name() {
         skip_for: vec![],
         on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
     };
-    let app = build_app(cfg).await;
-    let (token, cookie) = { token_cookie(&app, Some(COOKIE_NAME)).await };
+    let app = build_app(Some(cfg)).await;
+    let (token, cookie) = { token_cookie(&app, None).await };
 
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -263,15 +190,14 @@ async fn custom_config_cookie_name() {
     let resp = test::call_service(&app, req).await;
     assert!(resp.status().is_success());
 }
+
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn custom_config_form_field_name() {
     const FIELD_NAME: &str = "custom-cookie";
 
     let cfg = CsrfMiddlewareConfig {
-        #[cfg(feature = "actix-session")]
         pattern: CsrfPattern::SynchronizerToken,
-        #[cfg(not(feature = "actix-session"))]
-        pattern: CsrfPattern::DoubleSubmitCookie,
         cookie_name: DEFAULT_COOKIE_NAME.to_string(),
         form_field: FIELD_NAME.to_string(),
         header_name: "myheader".to_string(),
@@ -280,7 +206,7 @@ async fn custom_config_form_field_name() {
         skip_for: vec![],
         on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
     };
-    let app = build_app(cfg).await;
+    let app = build_app(Some(cfg)).await;
     let (token, cookie) = { token_cookie(&app, None).await };
 
     let form = format!("{}={}", FIELD_NAME, &token);
@@ -294,9 +220,10 @@ async fn custom_config_form_field_name() {
     assert!(resp.status().is_success());
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn handles_large_chunked_body() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (token, cookie) = { token_cookie(&app, None).await };
 
     let large = "a".repeat(1024 * 1024);
@@ -311,9 +238,10 @@ async fn handles_large_chunked_body() {
     assert_eq!(resp.status(), 200);
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn handles_malformed_json_body() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (_token, cookie) = { token_cookie(&app, None).await };
 
     let req = test::TestRequest::post()
@@ -326,9 +254,10 @@ async fn handles_malformed_json_body() {
     assert!(!resp.status().is_server_error());
 }
 
+#[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn token_double_submit_and_mismatch() {
-    let app = build_app(CsrfMiddlewareConfig::default()).await;
+    let app = build_app(None).await;
     let (token, cookie) = { token_cookie(&app, None).await };
 
     // Double submit: header matches, body is wrong (should succeed)

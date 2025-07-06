@@ -13,6 +13,8 @@ configure, and includes test coverage for common attacks and edge cases.
 
 ### Double Submit Cookie
 
+With default configuration `CsrfMiddleware` uses double submit cookie pattern. Make sense only with `httpOnly=true`
+
 ```rust
 use actix_web::{web, App, HttpServer, HttpResponse};
 use actix_csrf_middleware::{CsrfMiddleware, CsrfToken};
@@ -48,7 +50,7 @@ fn main() -> std::io::Result<()> {
         App::new()
             .wrap(CsrfMiddleware::new(CsrfMiddlewareConfig {
                 pattern: CsrfPattern::SynchronizerToken,
-                ..Default::default()
+                ..CsrfMiddlewareConfig::default()
             }))
             .wrap(SessionMiddleware::new(CookieSessionStore::default(), your_secret_key()))
         // Your routes...
@@ -65,7 +67,7 @@ use actix_csrf_middleware::{CsrfDoubleSubmitCookieConfig};
 
 fn build_custom_csrf_config() {
     CsrfDoubleSubmitCookieConfig {
-        storage: CsrfStorage::Session, // or CsrfStorage::Cookie
+        pattern: CsrfPattern::SynchronizerToken, // or CsrfPattern::DoubleSubmitCookie
         cookie_name: "csrf-token".to_string(),
         form_field: "csrf_token".to_string(),
         header_name: "X-CSRF-Token".to_string(),
