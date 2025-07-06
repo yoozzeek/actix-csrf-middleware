@@ -48,8 +48,8 @@ fn main() -> std::io::Result<()> {
 
 ### Synchronizer Token (actix-session)
 
-To enable the synchronizer token pattern activate session feature and wrap with session middleware (
-see [actix-session](https://docs.rs/actix-session)):
+To enable the synchronizer token pattern activate session feature and wrap with
+session middleware (see [actix-session](https://docs.rs/actix-session)):
 
 Dependencies:
 
@@ -103,8 +103,7 @@ fn build_custom_csrf_config() {
 ## Security
 
 > This code is implemented
->
-following [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+> following [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
 > It uses simple and robust double submit cookie pattern.
 
 - Token is 256-bit, base64url encoded, cryptographically secure random
