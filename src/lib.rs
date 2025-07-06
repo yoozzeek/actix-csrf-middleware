@@ -18,7 +18,11 @@ use rand::RngCore;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+#[cfg(feature = "actix-session")]
+pub const DEFAULT_COOKIE_NAME: &str = "id";
+#[cfg(not(feature = "actix-session"))]
 pub const DEFAULT_COOKIE_NAME: &str = "csrf-token";
+
 pub const DEFAULT_FORM_FIELD: &str = "csrf_token";
 pub const DEFAULT_HEADER: &str = "X-CSRF-Token";
 
@@ -37,18 +41,30 @@ pub struct CsrfMiddlewareConfig {
     pub cookie_name: String,
     pub form_field: String,
     pub header_name: String,
-    pub secure: bool, // same as above
+    pub secure: bool,
     pub same_site: SameSite,
     pub skip_for: Vec<String>,
     pub on_error: Rc<dyn Fn(&HttpRequest) -> HttpResponse>,
 }
 
 impl Default for CsrfMiddlewareConfig {
+    #[cfg(feature = "actix-session")]
     fn default() -> Self {
         CsrfMiddlewareConfig {
-            #[cfg(feature = "actix-session")]
             pattern: CsrfPattern::SynchronizerToken,
-            #[cfg(not(feature = "actix-session"))]
+            cookie_name: DEFAULT_COOKIE_NAME.into(),
+            form_field: DEFAULT_FORM_FIELD.into(),
+            header_name: DEFAULT_HEADER.into(),
+            secure: true,
+            same_site: SameSite::Strict,
+            skip_for: vec![],
+            on_error: Rc::new(|_| HttpResponse::Forbidden().body("Invalid CSRF token")),
+        }
+    }
+
+    #[cfg(not(feature = "actix-session"))]
+    fn default() -> Self {
+        CsrfMiddlewareConfig {
             pattern: CsrfPattern::DoubleSubmitCookie,
             cookie_name: DEFAULT_COOKIE_NAME.into(),
             form_field: DEFAULT_FORM_FIELD.into(),
@@ -181,7 +197,7 @@ where
                         }
                         CsrfPattern::DoubleSubmitCookie => {
                             let cookie = Cookie::build(&config.cookie_name, &new_token)
-                                .http_only(true)
+                                .http_only(false)
                                 .secure(config.secure)
                                 .same_site(config.same_site)
                                 .finish();
@@ -234,7 +250,7 @@ where
                     }
                     CsrfPattern::DoubleSubmitCookie => {
                         let cookie = Cookie::build(&config.cookie_name, &new_token)
-                            .http_only(true)
+                            .http_only(false)
                             .secure(config.secure)
                             .same_site(config.same_site)
                             .finish();
