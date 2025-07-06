@@ -13,7 +13,7 @@ configure, and includes test coverage for common attacks and edge cases.
 
 ### Double Submit Cookie
 
-With default configuration `CsrfMiddleware` uses double submit cookie pattern. Make sense only with `httpOnly=true`
+With default configuration `CsrfMiddleware` uses double submit cookie pattern.
 
 ```rust
 use actix_web::{web, App, HttpServer, HttpResponse};
@@ -48,10 +48,12 @@ use actix_session::{SessionMiddleware, storage::CookieSessionStore};
 fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
-            .wrap(CsrfMiddleware::new(CsrfMiddlewareConfig {
-                pattern: CsrfPattern::SynchronizerToken,
-                ..CsrfMiddlewareConfig::default()
-            }))
+            .wrap(CsrfMiddleware::default())
+            // or
+            // .wrap(CsrfMiddleware::new(CsrfMiddlewareConfig {
+            //     pattern: CsrfPattern::SynchronizerToken,
+            //     ..CsrfMiddlewareConfig::default()
+            // }))
             .wrap(SessionMiddleware::new(CookieSessionStore::default(), your_secret_key()))
         // Your routes...
     })
@@ -71,7 +73,7 @@ fn build_custom_csrf_config() {
         cookie_name: "csrf-token".to_string(),
         form_field: "csrf_token".to_string(),
         header_name: "X-CSRF-Token".to_string(),
-        secure: true, // Set Secure flag (should be true for production)
+        secure: true, // strictly required in prod
         same_site: SameSite::Strict,
         skip_for: vec!["/api/".to_string()], // Skip CSRF checks for certain paths
         on_error: Rc::new(|_| HttpResponse::Forbidden().body("Invalid CSRF token")),
@@ -81,8 +83,8 @@ fn build_custom_csrf_config() {
 
 ## Security
 
-> This middleware was implemented following the best practices from
-> the [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+> This code is implemented
+> following [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
 > It uses simple and robust double submit cookie pattern.
 
 - Token is 256-bit, base64url encoded, cryptographically secure random
