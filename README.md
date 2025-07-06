@@ -28,7 +28,7 @@ fn main() -> std::io::Result<()> {
                 // Inject CSRF token to your form
                 HttpResponse::Ok().body(format!("token:{}", csrf.0))
             }))
-            .route("/submit", web::post().to(|_csrf: CsrfToken| async move {
+            .route("/submit", web::post().to(|| async move {
                 // Only called if CSRF is valid
                 HttpResponse::Ok().body("OK")
             }))
@@ -88,8 +88,7 @@ fn build_custom_csrf_config() {
 
 > **Security:**  
 > This middleware was implemented following the best practices from
->
-the [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+> the [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
 > It uses simple and robust double submit cookie pattern.
 
 ## License
