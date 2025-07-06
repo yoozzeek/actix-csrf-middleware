@@ -20,3 +20,15 @@ rand = "0.9.1"
 serde_json = "1.0.140"
 serde_urlencoded = "0.7.1"
 log = "0.4.27"
+
+[dev-dependencies]
+criterion = "0.5"
+actix-rt = "2.10"
+
+[[bench]]
+name = "token"
+harness = false
+
+[[bench]]
+name = "http"
+harness = false
