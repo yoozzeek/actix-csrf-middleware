@@ -23,6 +23,7 @@ dependencies = [
 name = "actix-csrf-middleware"
 version = "0.1.0"
 dependencies = [
+ "actix-http",
  "actix-session",
  "actix-web",
  "base64 0.22.1",
