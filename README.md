@@ -5,7 +5,7 @@ cookie and synchronizer token patterns (with actix-session) out of the box. Flex
 configure, and includes test coverage for common attacks and edge cases.
 
 - Double submit cookie or actix session token storage
-- Handles JSON and form submissions from the box
+- Handles JSON and form submissions
 - Configurable cookie name, header name, form field, and error handler
 - Per-path CSRF exclusion (skip_for)
 
@@ -47,7 +47,7 @@ fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
             .wrap(CsrfMiddleware::new(CsrfMiddlewareConfig {
-                storage: CsrfPattern::SynchronizerToken,
+                pattern: CsrfPattern::SynchronizerToken,
                 ..Default::default()
             }))
             .wrap(SessionMiddleware::new(CookieSessionStore::default(), your_secret_key()))
@@ -79,15 +79,14 @@ fn build_custom_csrf_config() {
 
 ## Security
 
+> This middleware was implemented following the best practices from
+> the [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+> It uses simple and robust double submit cookie pattern.
+
 - Token is 256-bit, base64url encoded, cryptographically secure random
 - Compares tokens in constant time to prevent timing attacks
 - Secure cookie options (SameSite, Secure, HttpOnly) enabled by default
 - All mutating requests (POST/PUT/PATCH/DELETE) are protected
-
-> **Security:**  
-> This middleware was implemented following the best practices from
-> the [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
-> It uses simple and robust double submit cookie pattern.
 
 ## License
 
