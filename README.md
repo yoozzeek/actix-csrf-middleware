@@ -16,7 +16,7 @@ configure, and includes test coverage for common attacks and edge cases.
 
 ```rust
 use actix_web::{web, App, HttpServer, HttpResponse};
-use csrf_middleware::{
+use actix_csrf_middleware::{
     CsrfDoubleSubmitCookieMiddleware, CsrfDoubleSubmitCookieConfig, CsrfStorage, CsrfToken,
 };
 
@@ -63,7 +63,7 @@ fn main() -> std::io::Result<()> {
 ## Configuration
 
 ```rust
-use actix_session::{CsrfDoubleSubmitCookieConfig};
+use actix_csrf_middleware::{CsrfDoubleSubmitCookieConfig};
 
 fn build_custom_csrf_config() {
     CsrfDoubleSubmitCookieConfig {
