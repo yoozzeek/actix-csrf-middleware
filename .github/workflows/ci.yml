@@ -6,21 +6,14 @@ on:
     branches: [ main ]
 jobs:
   test:
+    name: cargo test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-
-      - name: Build
-        run: cargo build --all --release
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Test Default
-        run: cargo test --release -- --nocapture
+        run: cargo test
 
       - name: Test Session Feature
-        run: cargo test --features "session" --release -- --nocapture
+        run: cargo test --features "session"
