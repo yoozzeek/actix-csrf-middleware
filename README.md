@@ -1,12 +1,12 @@
 # actix-csrf-middleware
 
 CSRF protection middleware for [Actix Web](https://github.com/actix/actix-web) applications. Supports both double submit
-cookie pattern. Flexible, easy to
+cookie and synchronizer token patterns. Flexible, easy to
 configure, and includes test coverage for common attacks and edge cases.
 
 - Double submit cookie or actix session token storage
 - Handles JSON and form submissions from the box
-- Util functions for implementing Synchronizer Token Pattern
+- Utils for implementing Synchronizer Token Pattern
 - Configurable cookie name, header name, form field, and error handler
 - Per-path CSRF exclusion (skip_for)
 
@@ -88,7 +88,8 @@ fn build_custom_csrf_config() {
 
 > **Security:**  
 > This middleware was implemented following the best practices from
-> the [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+>
+the [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
 > It uses simple and robust double submit cookie pattern.
 
 ## License
