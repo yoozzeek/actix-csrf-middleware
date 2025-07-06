@@ -1,0 +1,21 @@
+[package]
+name = "actix-csrf-middleware"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+session = ["actix-session"]
+
+[dependencies]
+actix-web = { version = "4", features = ["compat", "secure-cookies"] }
+actix-session = { version = "0.10", optional = true, features = ["cookie-session"] }
+base64 = "0.22.1"
+futures-util = "0.3.31"
+rand = "0.9.1"
+serde_json = "1.0.140"
+serde_urlencoded = "0.7.1"
+log = "0.4.27"
