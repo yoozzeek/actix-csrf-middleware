@@ -9,11 +9,20 @@ configure, and includes test coverage for common attacks and edge cases.
 - Configurable cookie, header name, form field, and error handler
 - Per-path CSRF exclusion (skip_for)
 
-## Example: Basic Usage
+## Examples
 
-### Double Submit Cookie
+### Basic Usage: Signed Double Submit Cookie
 
-With default configuration `CsrfMiddleware` uses double submit cookie pattern.
+By default, CsrfMiddleware uses the signed double submit cookie pattern (per OWASP). CSRF validation relies solely on
+the cookie and request header/body, not a backend session store. `HttpOnly=false` is set for the CSRF cookie so that
+modern frontend frameworks can read and transmit the token in a custom header.
+
+The token is generated as:<br>
+
+```
+hmac = HMAC_SHA256(secret_key, session_or_pre_session_id + "!" + csrf_token) 
+token = hmac + "." + csrf_token
+```
 
 Dependencies:
 
@@ -46,10 +55,10 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
-### Synchronizer Token (actix-session)
+### Synchronizer Token
 
-To enable the synchronizer token pattern activate session feature and wrap with
-session middleware (see [actix-session](https://docs.rs/actix-session)):
+To enable the synchronizer token pattern activate session feature and wrap with `actix-session` middleware
+(see [actix-session](https://docs.rs/actix-session)).
 
 Dependencies:
 
@@ -65,33 +74,29 @@ use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig, CsrfPattern, C
 use actix_session::{SessionMiddleware, storage::CookieSessionStore};
 
 fn main() -> std::io::Result<()> {
+    let session_store = CookieSessionStore::default(); // you can use redis here
     HttpServer::new(|| {
         App::new()
             .wrap(CsrfMiddleware::default())
-            // or
-            // .wrap(CsrfMiddleware::new(CsrfMiddlewareConfig {
-            //     pattern: CsrfPattern::SynchronizerToken,
-            //     ..CsrfMiddlewareConfig::default()
-            // }))
-            .wrap(SessionMiddleware::new(CookieSessionStore::default(), your_secret_key()))
-        // Your routes...
+            .wrap(SessionMiddleware::new(session_store, your_secret_key()))
     })
         .bind(("127.0.0.1", 8080))?
         .run()
 }
 ```
 
-## Configuration
+### Custom Configuration
 
 ```rust
-use actix_csrf_middleware::{CsrfDoubleSubmitCookieConfig};
+use actix_csrf_middleware::{CsrfMiddlewareConfig};
 
-fn build_custom_csrf_config() {
-    CsrfDoubleSubmitCookieConfig {
+fn build_custom_config() {
+    CsrfMiddlewareConfig {
         pattern: CsrfPattern::SynchronizerToken, // or CsrfPattern::DoubleSubmitCookie
         cookie_name: "csrf-token".to_string(),
         form_field: "csrf_token".to_string(),
         header_name: "X-CSRF-Token".to_string(),
+        http_only: true,
         secure: true, // strictly required in prod
         same_site: SameSite::Strict,
         skip_for: vec!["/api/".to_string()], // Skip CSRF checks for certain paths
@@ -102,14 +107,15 @@ fn build_custom_csrf_config() {
 
 ## Security
 
-> This code is implemented
-> following [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
-> It uses simple and robust double submit cookie pattern.
+This code is implemented
+following [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+It uses simple and robust double submit cookie pattern.
 
 - Token is 256-bit, base64url encoded, cryptographically secure random
+- Uses the signed double submit cookie pattern (per OWASP)
+- Secure against CSRF and cookie injection (using HMAC with session/pre-session ID)
+- All mutating requests (POST/PUT/PATCH/DELETE) are protected by default
 - Compares tokens in constant time to prevent timing attacks
-- Secure cookie options (SameSite, Secure, HttpOnly) enabled by default
-- All mutating requests (POST/PUT/PATCH/DELETE) are protected
 
 ## License
 
