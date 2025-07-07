@@ -14,21 +14,22 @@ use futures_util::{
     future::{LocalBoxFuture, Ready, err, ok},
     stream::StreamExt,
 };
+use hmac::{Hmac, Mac};
 use rand::RngCore;
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-#[cfg(feature = "actix-session")]
-pub const DEFAULT_COOKIE_NAME: &str = "id";
-#[cfg(not(feature = "actix-session"))]
+pub const DEFAULT_SESSION_ID_COOKIE_NAME: &str = "id";
 pub const DEFAULT_COOKIE_NAME: &str = "csrf-token";
-
 pub const DEFAULT_FORM_FIELD: &str = "csrf_token";
 pub const DEFAULT_HEADER: &str = "X-CSRF-Token";
 
 const TOKEN_LEN: usize = 32;
 
-#[derive(Clone)]
+type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Clone, PartialEq)]
 pub enum CsrfPattern {
     #[cfg(feature = "actix-session")]
     SynchronizerToken,
@@ -36,41 +37,54 @@ pub enum CsrfPattern {
 }
 
 #[derive(Clone)]
-pub struct CsrfMiddlewareConfig {
-    pub pattern: CsrfPattern,
-    pub cookie_name: String,
-    pub form_field: String,
-    pub header_name: String,
+pub struct CsrfDoubleSubmitCookie {
+    pub http_only: bool,
     pub secure: bool,
     pub same_site: SameSite,
+}
+
+#[derive(Clone)]
+pub struct CsrfMiddlewareConfig {
+    pub pattern: CsrfPattern,
+    pub session_id_cookie_name: String,
+    pub token_cookie_name: String,
+    pub token_form_field: String,
+    pub token_header_name: String,
+    pub token_cookie_config: Option<CsrfDoubleSubmitCookie>,
+    pub secret_key: Option<Vec<u8>>,
     pub skip_for: Vec<String>,
     pub on_error: Rc<dyn Fn(&HttpRequest) -> HttpResponse>,
 }
 
-impl Default for CsrfMiddlewareConfig {
+impl CsrfMiddlewareConfig {
     #[cfg(feature = "actix-session")]
-    fn default() -> Self {
+    pub fn synchronizer_token() -> Self {
         CsrfMiddlewareConfig {
             pattern: CsrfPattern::SynchronizerToken,
-            cookie_name: DEFAULT_COOKIE_NAME.into(),
-            form_field: DEFAULT_FORM_FIELD.into(),
-            header_name: DEFAULT_HEADER.into(),
-            secure: true,
-            same_site: SameSite::Strict,
+            session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
+            token_cookie_name: DEFAULT_COOKIE_NAME.into(),
+            token_form_field: DEFAULT_FORM_FIELD.into(),
+            token_header_name: DEFAULT_HEADER.into(),
+            token_cookie_config: None,
+            secret_key: None,
             skip_for: vec![],
             on_error: Rc::new(|_| HttpResponse::Forbidden().body("Invalid CSRF token")),
         }
     }
 
-    #[cfg(not(feature = "actix-session"))]
-    fn default() -> Self {
+    pub fn double_submit_cookie(secret_key: &[u8]) -> Self {
         CsrfMiddlewareConfig {
             pattern: CsrfPattern::DoubleSubmitCookie,
-            cookie_name: DEFAULT_COOKIE_NAME.into(),
-            form_field: DEFAULT_FORM_FIELD.into(),
-            header_name: DEFAULT_HEADER.into(),
-            secure: true,
-            same_site: SameSite::Strict,
+            session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
+            token_cookie_name: DEFAULT_COOKIE_NAME.into(),
+            token_form_field: DEFAULT_FORM_FIELD.into(),
+            token_header_name: DEFAULT_HEADER.into(),
+            token_cookie_config: Some(CsrfDoubleSubmitCookie {
+                http_only: false, // Should be false for double-submit cookie
+                secure: true,
+                same_site: SameSite::Strict,
+            }),
+            secret_key: Some(Vec::from(secret_key)),
             skip_for: vec![],
             on_error: Rc::new(|_| HttpResponse::Forbidden().body("Invalid CSRF token")),
         }
@@ -84,12 +98,6 @@ pub struct CsrfMiddleware {
 impl CsrfMiddleware {
     pub fn new(config: CsrfMiddlewareConfig) -> Self {
         Self { config }
-    }
-}
-
-impl Default for CsrfMiddleware {
-    fn default() -> Self {
-        Self::new(CsrfMiddlewareConfig::default())
     }
 }
 
@@ -118,6 +126,61 @@ pub struct CsrfMiddlewareImpl<S> {
     config: CsrfMiddlewareConfig,
 }
 
+impl<S> CsrfMiddlewareImpl<S> {
+    fn get_session(&self, req: &ServiceRequest) -> (String, Option<String>) {
+        let existing_session_id = req
+            .cookie(&self.config.session_id_cookie_name)
+            .map(|c| c.value().to_string());
+
+        if let Some(session_id) = existing_session_id {
+            (session_id, None)
+        } else {
+            let tok = generate_random_token();
+            (tok.clone(), Some(tok))
+        }
+    }
+
+    #[cfg(feature = "actix-session")]
+    fn get_session_token(&self, req: &ServiceRequest) -> (String, Option<String>) {
+        let session = req.get_session();
+        let found = session
+            .get::<String>(&self.config.token_cookie_name)
+            .ok()
+            .flatten();
+        match found {
+            Some(tok) => (tok, None),
+            None => {
+                let tok = generate_random_token();
+                (tok.clone(), Some(tok))
+            }
+        }
+    }
+
+    fn get_cookie_token(&self, session_id: &str, req: &ServiceRequest) -> (String, Option<String>) {
+        let token = {
+            req.cookie(&self.config.token_cookie_name)
+                .map(|c| c.value().to_string())
+        };
+
+        match token {
+            Some(tok) => (tok, None),
+            None => {
+                let secret = self
+                    .config
+                    .secret_key
+                    .as_ref()
+                    .expect("Secret key is set for double submit cookie pattern");
+                let tok = generate_hmac_token(&session_id, secret);
+                (tok.clone(), Some(tok))
+            }
+        }
+    }
+
+    fn validate_token(token: &str, session_id: &str, secret_key: &[u8]) -> bool {
+        validate_hmac_token(session_id, token, secret_key).unwrap_or(false)
+    }
+}
+
 impl<S, B> Service<ServiceRequest> for CsrfMiddlewareImpl<S>
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
@@ -142,40 +205,28 @@ where
             return Box::pin(async move { Ok(fut.await?.map_into_left_body()) });
         }
 
-        let (token, store_token): (String, Option<String>) = match self.config.pattern {
+        #[cfg(feature = "actix-session")]
+        let session = req.get_session();
+
+        #[allow(clippy::type_complexity)]
+        let (token, set_token, cookie_session): (
+            String,
+            Option<String>,
+            Option<(String, Option<String>)>,
+        ) = match self.config.pattern {
+            CsrfPattern::DoubleSubmitCookie => {
+                let (session_id, set_session_id) = self.get_session(&req);
+                let (token, set_token) = self.get_cookie_token(&session_id, &req);
+                (token, set_token, Some((session_id, set_session_id)))
+            }
             #[cfg(feature = "actix-session")]
             CsrfPattern::SynchronizerToken => {
-                let session = req.get_session();
-                let found = session
-                    .get::<String>(&self.config.cookie_name)
-                    .ok()
-                    .flatten();
-                match found {
-                    Some(tok) => (tok, None),
-                    None => {
-                        let tok = generate_token();
-                        (tok.clone(), Some(tok))
-                    }
-                }
-            }
-            CsrfPattern::DoubleSubmitCookie => {
-                let found = req
-                    .cookie(&self.config.cookie_name)
-                    .map(|c| c.value().to_string());
-                match found {
-                    Some(tok) => (tok, None),
-                    None => {
-                        let tok = generate_token();
-                        (tok.clone(), Some(tok))
-                    }
-                }
+                let (token, set_token) = self.get_session_token(&req);
+                (token, set_token, None)
             }
         };
 
         req.extensions_mut().insert(CsrfToken(token.clone()));
-
-        #[cfg(feature = "actix-session")]
-        let session = req.get_session();
 
         let is_mutating = matches!(
             *req.method(),
@@ -184,24 +235,53 @@ where
 
         if !is_mutating {
             let fut = self.service.call(req);
-            let cookie_name = self.config.cookie_name.clone();
+            let cookie_name = self.config.token_cookie_name.clone();
             let config = self.config.clone();
 
             return Box::pin(async move {
                 let mut res = fut.await?.map_into_left_body();
-                if let Some(new_token) = store_token {
+                if let Some(new_token) = set_token {
                     match config.pattern {
                         #[cfg(feature = "actix-session")]
                         CsrfPattern::SynchronizerToken => {
-                            session.insert(&cookie_name, new_token)?;
+                            session
+                                .insert(&cookie_name, new_token)
+                                .map_err(actix_web::error::ErrorInternalServerError)?
                         }
                         CsrfPattern::DoubleSubmitCookie => {
-                            let cookie = Cookie::build(&config.cookie_name, &new_token)
-                                .http_only(false)
-                                .secure(config.secure)
-                                .same_site(config.same_site)
+                            let cookie_config = match config.token_cookie_config {
+                                Some(config) => config,
+                                None => {
+                                    return Err(actix_web::error::ErrorInternalServerError(
+                                        "token cookie config is not set",
+                                    ));
+                                }
+                            };
+
+                            if let Some((session_id, set_session_id)) = cookie_session {
+                                if set_session_id.is_some() {
+                                    let session_cookie =
+                                        Cookie::build(&config.session_id_cookie_name, &session_id)
+                                            .http_only(cookie_config.http_only)
+                                            .secure(cookie_config.secure)
+                                            .same_site(cookie_config.same_site)
+                                            .finish();
+
+                                    res.response_mut()
+                                        .add_cookie(&session_cookie)
+                                        .map_err(actix_web::error::ErrorInternalServerError)?;
+                                }
+                            }
+
+                            let token_cookie = Cookie::build(&config.token_cookie_name, &new_token)
+                                .http_only(cookie_config.http_only)
+                                .secure(cookie_config.secure)
+                                .same_site(cookie_config.same_site)
                                 .finish();
-                            res.response_mut().add_cookie(&cookie)?;
+
+                            res.response_mut()
+                                .add_cookie(&token_cookie)
+                                .map_err(actix_web::error::ErrorInternalServerError)?;
                         }
                     }
                 }
@@ -212,23 +292,76 @@ where
 
         let service = Rc::clone(&self.service);
         let config = self.config.clone();
+        let token = token.clone();
 
         Box::pin(async move {
             let (http_req, mut payload) = req.into_parts();
+            let session_id = if let Some((session_id, _set_session_id)) = &cookie_session {
+                Some(session_id)
+            } else {
+                None
+            };
+
             let header_token = http_req
                 .headers()
-                .get(&config.header_name)
+                .get(&config.token_header_name)
                 .and_then(|hv| hv.to_str().ok());
 
-            let mut valid = header_token
-                .map(|header_token| eq_tokens(&token, header_token))
-                .unwrap_or(false);
+            let mut valid = if let Some(header_token) = header_token {
+                match config.pattern {
+                    #[cfg(feature = "actix-session")]
+                    CsrfPattern::SynchronizerToken => {
+                        eq_tokens(token.as_bytes(), header_token.as_bytes())
+                    }
+                    CsrfPattern::DoubleSubmitCookie => {
+                        if let Some(id) = session_id {
+                            let secret = match config.secret_key.as_ref() {
+                                Some(secret) => secret,
+                                None => {
+                                    return Err(actix_web::error::ErrorInternalServerError(
+                                        "cookie secret is not set",
+                                    ));
+                                }
+                            };
+                            Self::validate_token(header_token, id, secret)
+                        } else {
+                            return Err(actix_web::error::ErrorInternalServerError(
+                                "session id is not set",
+                            ));
+                        }
+                    }
+                }
+            } else {
+                false
+            };
 
             if !valid {
                 if let Some(body_token) =
                     try_to_extract_token_from_body(&http_req, &mut payload, &config).await
                 {
-                    valid = eq_tokens(&token, &body_token);
+                    valid = match config.pattern {
+                        #[cfg(feature = "actix-session")]
+                        CsrfPattern::SynchronizerToken => {
+                            eq_tokens(token.as_bytes(), body_token.as_bytes())
+                        }
+                        CsrfPattern::DoubleSubmitCookie => {
+                            if let Some(id) = session_id {
+                                let secret = match config.secret_key.as_ref() {
+                                    Some(secret) => secret,
+                                    None => {
+                                        return Err(actix_web::error::ErrorInternalServerError(
+                                            "cookie secret is not set",
+                                        ));
+                                    }
+                                };
+                                Self::validate_token(&body_token, id, secret)
+                            } else {
+                                return Err(actix_web::error::ErrorInternalServerError(
+                                    "session id is not set",
+                                ));
+                            }
+                        }
+                    };
                 }
             }
 
@@ -242,19 +375,24 @@ where
 
             let status = res.status().as_u16();
             if matches!(status, 200 | 201 | 202 | 204) {
-                let new_token = generate_token();
+                let new_token = generate_random_token();
                 match config.pattern {
                     #[cfg(feature = "actix-session")]
-                    CsrfPattern::SynchronizerToken => {
-                        session.insert(&config.cookie_name, new_token)?;
-                    }
+                    CsrfPattern::SynchronizerToken => session
+                        .insert(config.token_cookie_name.clone(), new_token)
+                        .map_err(actix_web::error::ErrorInternalServerError)?,
                     CsrfPattern::DoubleSubmitCookie => {
-                        let cookie = Cookie::build(&config.cookie_name, &new_token)
-                            .http_only(false)
-                            .secure(config.secure)
-                            .same_site(config.same_site)
-                            .finish();
-                        res.response_mut().add_cookie(&cookie)?;
+                        if let Some(cfg) = config.token_cookie_config {
+                            let cookie = Cookie::build(&config.token_cookie_name, &new_token)
+                                .http_only(cfg.http_only)
+                                .secure(cfg.secure)
+                                .same_site(cfg.same_site)
+                                .finish();
+
+                            res.response_mut()
+                                .add_cookie(&cookie)
+                                .map_err(actix_web::error::ErrorInternalServerError)?;
+                        }
                     }
                 }
             }
@@ -283,35 +421,18 @@ async fn try_to_extract_token_from_body(
             if ct.starts_with("application/json") {
                 if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
                     return json
-                        .get(&config.form_field)
+                        .get(&config.token_form_field)
                         .and_then(|v| v.as_str().map(String::from));
                 }
             } else if ct.starts_with("application/x-www-form-urlencoded") {
                 if let Ok(form) = serde_urlencoded::from_bytes::<HashMap<String, String>>(&body) {
-                    return form.get(&config.form_field).cloned();
+                    return form.get(&config.token_form_field).cloned();
                 }
             }
         }
     }
 
     None
-}
-
-pub fn generate_token() -> String {
-    let mut buf = [0u8; TOKEN_LEN];
-    rand::rng().fill_bytes(&mut buf);
-    URL_SAFE_NO_PAD.encode(buf)
-}
-
-pub fn eq_tokens(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut result = 0;
-    for (x, y) in a.as_bytes().iter().zip(b.as_bytes()) {
-        result |= x ^ y;
-    }
-    result == 0
 }
 
 #[derive(Clone)]
@@ -332,4 +453,49 @@ impl FromRequest for CsrfToken {
             }
         }
     }
+}
+
+pub fn generate_random_token() -> String {
+    let mut buf = [0u8; TOKEN_LEN];
+    rand::rng().fill_bytes(&mut buf);
+    URL_SAFE_NO_PAD.encode(buf)
+}
+
+pub fn eq_tokens(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut result = 0;
+    for (x, y) in a.iter().zip(b) {
+        result |= x ^ y;
+    }
+    result == 0
+}
+
+pub fn generate_hmac_token(session_id: &str, secret: &[u8]) -> String {
+    let tok = generate_random_token();
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC can take key of any size");
+    let message = format!("{}!{}", session_id, tok);
+    mac.update(message.as_bytes());
+
+    let hmac_hex = hex::encode(mac.finalize().into_bytes());
+    format!("{}.{}", hmac_hex, tok)
+}
+
+pub fn validate_hmac_token(session_id: &str, token: &str, secret: &[u8]) -> Result<bool, Error> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 2 {
+        return Ok(false);
+    }
+    let (hmac_hex, csrf_token) = (parts[0], parts[1]);
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret)
+        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+    let message = format!("{}!{}", session_id, csrf_token);
+    mac.update(message.as_bytes());
+    let expected_hmac = mac.finalize().into_bytes();
+
+    let hmac_bytes = hex::decode(hmac_hex).map_err(actix_web::error::ErrorInternalServerError)?;
+
+    Ok(eq_tokens(&expected_hmac, &hmac_bytes))
 }
