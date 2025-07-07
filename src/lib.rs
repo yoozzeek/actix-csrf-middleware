@@ -170,7 +170,7 @@ impl<S> CsrfMiddlewareImpl<S> {
                     .secret_key
                     .as_ref()
                     .expect("Secret key is set for double submit cookie pattern");
-                let tok = generate_hmac_token(&session_id, secret);
+                let tok = generate_hmac_token(session_id, secret);
                 (tok.clone(), Some(tok))
             }
         }
@@ -490,7 +490,7 @@ pub fn validate_hmac_token(session_id: &str, token: &str, secret: &[u8]) -> Resu
     let (hmac_hex, csrf_token) = (parts[0], parts[1]);
 
     let mut mac = Hmac::<Sha256>::new_from_slice(secret)
-        .map_err(|e| actix_web::error::ErrorInternalServerError(e))?;
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     let message = format!("{}!{}", session_id, csrf_token);
     mac.update(message.as_bytes());
     let expected_hmac = mac.finalize().into_bytes();
