@@ -35,12 +35,13 @@ Code:
 
 ```rust
 use actix_web::{web, App, HttpServer, HttpResponse};
-use actix_csrf_middleware::{CsrfMiddleware, CsrfToken};
+use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken};
 
 fn main() -> std::io::Result<()> {
+    let csrf_config = CsrfMiddlewareConfig::double_submit_cookie();
     HttpServer::new(|| {
         App::new()
-            .wrap(CsrfMiddleware::default())
+            .wrap(CsrfMiddleware::new(csrf_config))
             .route("/form", web::get().to(|csrf: CsrfToken| async move {
                 // Inject CSRF token to your form
                 HttpResponse::Ok().body(format!("token:{}", csrf.0))
@@ -75,9 +76,11 @@ use actix_session::{SessionMiddleware, storage::CookieSessionStore};
 
 fn main() -> std::io::Result<()> {
     let session_store = CookieSessionStore::default(); // you can use redis here
+    let csrf_config = CsrfMiddlewareConfig::synchronizer_token();
+
     HttpServer::new(|| {
         App::new()
-            .wrap(CsrfMiddleware::default())
+            .wrap(CsrfMiddleware::new(csrf_config))
             .wrap(SessionMiddleware::new(session_store, your_secret_key()))
     })
         .bind(("127.0.0.1", 8080))?
@@ -92,13 +95,17 @@ use actix_csrf_middleware::{CsrfMiddlewareConfig};
 
 fn build_custom_config() {
     CsrfMiddlewareConfig {
-        pattern: CsrfPattern::SynchronizerToken, // or CsrfPattern::DoubleSubmitCookie
-        cookie_name: "csrf-token".to_string(),
-        form_field: "csrf_token".to_string(),
-        header_name: "X-CSRF-Token".to_string(),
-        http_only: true,
-        secure: true, // strictly required in prod
-        same_site: SameSite::Strict,
+        pattern: CsrfPattern::SynchronizerToken,
+        session_id_cookie_name: "session-id".to_string(),
+        token_cookie_name: "csrf-token".to_string(),
+        token_form_field: "csrf_token".to_string(),
+        token_header_name: "X-CSRF-Token".to_string(),
+        token_cookie_config: Some(CsrfDoubleSubmitCookie {
+            http_only: true,
+            secure: true,
+            same_site: SameSite::Lax,
+        }),
+        secret_key: Some(b"seper-secret-key".to_vec()),
         skip_for: vec!["/api/".to_string()], // Skip CSRF checks for certain paths
         on_error: Rc::new(|_| HttpResponse::Forbidden().body("Invalid CSRF token")),
     }
@@ -111,8 +118,8 @@ This code is implemented
 following [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
 It uses simple and robust double submit cookie pattern.
 
-- Token is 256-bit, base64url encoded, cryptographically secure random
 - Uses the signed double submit cookie pattern (per OWASP)
+- Token is 256-bit, base64url encoded, cryptographically secure random
 - Secure against CSRF and cookie injection (using HMAC with session/pre-session ID)
 - All mutating requests (POST/PUT/PATCH/DELETE) are protected by default
 - Compares tokens in constant time to prevent timing attacks
