@@ -28,7 +28,7 @@ Dependencies:
 
 ```
 [dependencies]
-actix-csrf-middleware = "0.2"
+actix-csrf-middleware = { git = "https://github.com/yoozzeek/actix-csrf-middleware.git" }
 ```
 
 Code:
@@ -65,7 +65,7 @@ Dependencies:
 
 ```
 [dependencies]
-actix-csrf-middleware = { version = "0.2", features = ["session"] }
+actix-csrf-middleware = { git = "https://github.com/yoozzeek/actix-csrf-middleware.git", features = ["session"] }
 ```
 
 Code:
