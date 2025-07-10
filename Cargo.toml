@@ -26,6 +26,7 @@ log = "0.4.27"
 [dev-dependencies]
 criterion = "0.5"
 actix-rt = "2.10"
+actix-multipart = "0.7.2"
 
 [[bench]]
 name = "http"

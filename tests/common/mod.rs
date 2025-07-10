@@ -8,6 +8,12 @@ use actix_session::{
 use actix_web::cookie::{Key, SameSite};
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::{App, HttpResponse, test, web};
+use hmac::Hmac;
+use sha2::Sha256;
+
+pub type HmacSha256 = Hmac<Sha256>;
+
+pub const HMAC_SECRET: &[u8] = b"secret-key";
 
 pub fn test_key() -> Key {
     Key::generate()

@@ -1,16 +1,22 @@
 mod common;
+
 use actix_csrf_middleware::{
     CsrfDoubleSubmitCookie, CsrfMiddlewareConfig, CsrfPattern, DEFAULT_COOKIE_NAME,
-    DEFAULT_FORM_FIELD, DEFAULT_HEADER, DEFAULT_SESSION_ID_COOKIE_NAME,
+    DEFAULT_FORM_FIELD, DEFAULT_HEADER, DEFAULT_SESSION_ID_COOKIE_NAME, PRE_SESSION_COOKIE_NAME,
+    generate_random_token,
 };
-use actix_http::Request;
 use actix_http::body::{BoxBody, EitherBody};
+use actix_http::{Request, StatusCode};
+use actix_multipart::test::create_form_data_payload_and_headers;
 use actix_web::cookie::{Cookie, SameSite};
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::http::header::ContentType;
-use actix_web::{HttpResponse, test};
+use actix_web::web::Bytes;
+use actix_web::{HttpResponse, mime, test};
 use common::*;
+use hmac::Mac;
 use serde_json::json;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 fn get_secret_key() -> Vec<u8> {
@@ -37,7 +43,7 @@ where
     let session_id_cookie = resp
         .response()
         .cookies()
-        .find(|c| c.name() == session_id_cookie_name)
+        .find(|c| c.name() == session_id_cookie_name || c.name() == PRE_SESSION_COOKIE_NAME)
         .map(|c| c.into_owned())
         .unwrap();
 
@@ -121,7 +127,7 @@ async fn invalid_csrf_header() {
         .insert_header((DEFAULT_HEADER, "wrong-token"))
         .to_request();
     let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), 403);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[actix_web::test]
@@ -136,7 +142,7 @@ async fn invalid_csrf_form_field() {
         .cookie(session_id_cookie)
         .to_request();
     let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), 403);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[actix_web::test]
@@ -152,7 +158,7 @@ async fn invalid_csrf_json_payload() {
         }))
         .to_request();
     let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), 403);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[actix_web::test]
@@ -164,8 +170,11 @@ async fn missing_csrf_token() {
         .cookie(token_cookie)
         .cookie(session_id_cookie)
         .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), 403);
+
+    match test::try_call_service(&app, req).await {
+        Ok(_) => panic!("should not fail here"),
+        Err(err) => assert_eq!(err.to_string(), "csrf token is not present in request"),
+    }
 }
 
 #[actix_web::test]
@@ -181,7 +190,7 @@ async fn token_refresh_on_successful_mutation() {
         .cookie(session1_cookie)
         .to_request();
     let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), StatusCode::OK);
 
     // GET new token (should be refreshed)
     let (new_token, _token_cookie, _session_id_cookie) = { token_cookie(&app, None, None).await };
@@ -194,6 +203,7 @@ async fn custom_config_header_name() {
 
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::DoubleSubmitCookie,
+        manual_multipart: false,
         session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
         token_cookie_name: DEFAULT_COOKIE_NAME.to_string(),
         token_form_field: "myfield".to_string(),
@@ -226,6 +236,7 @@ async fn custom_config_cookie_name() {
 
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::DoubleSubmitCookie,
+        manual_multipart: false,
         session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
         token_cookie_name: COOKIE_NAME.to_string(),
         token_form_field: DEFAULT_FORM_FIELD.to_string(),
@@ -259,6 +270,7 @@ async fn custom_config_form_field_name() {
 
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::DoubleSubmitCookie,
+        manual_multipart: false,
         session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
         token_cookie_name: DEFAULT_COOKIE_NAME.to_string(),
         token_form_field: FIELD_NAME.to_string(),
@@ -302,7 +314,7 @@ async fn handles_large_chunked_body() {
         .set_payload(large)
         .to_request();
     let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[actix_web::test]
@@ -317,37 +329,113 @@ async fn handles_malformed_json_body() {
         .cookie(session_cookie)
         .set_payload("{not: valid json")
         .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(!resp.status().is_server_error());
+
+    match test::try_call_service(&app, req).await {
+        Ok(_) => panic!("should not fail here"),
+        Err(err) => assert_eq!(err.to_string(), "csrf token is not present in request"),
+    }
 }
 
 #[actix_web::test]
-async fn token_double_submit_and_mismatch() {
+async fn multipart_form_data_not_enabled() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
-    let (token, token_cookie, session_id_cookie) = { token_cookie(&app, None, None).await };
+    let (_token, token_cookie, session_id_cookie) = token_cookie(&app, None, None).await;
 
-    // Double submit: header matches, body is wrong (should succeed)
-    let form = "csrf_token=wrong_token".to_string();
+    let (body, headers) = create_form_data_payload_and_headers(
+        "foo",
+        Some("lorem. txt".to_owned()),
+        Some(mime::TEXT_PLAIN_UTF_8),
+        Bytes::from_static(b"Lorem ipsum dolor sit amet"),
+    );
+
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token))
-        .insert_header(ContentType::form_url_encoded())
-        .cookie(token_cookie.clone())
-        .cookie(session_id_cookie.clone())
-        .set_payload(form.clone())
-        .to_request();
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success());
-
-    // Double submit: both wrong (should fail)
-    let req = test::TestRequest::post()
-        .uri("/submit")
-        .insert_header((DEFAULT_HEADER, "bad"))
-        .insert_header(ContentType::form_url_encoded())
         .cookie(token_cookie)
-        .cookie(session_id_cookie)
-        .set_payload(form)
+        .cookie(session_id_cookie);
+
+    let req = headers
+        .into_iter()
+        .fold(req, |req, hdr| req.insert_header(hdr))
+        .set_payload(body)
+        .to_request();
+
+    match test::try_call_service(&app, req).await {
+        Ok(_) => panic!("cannot be OK for this query"),
+        Err(err) => assert_eq!(
+            err.to_string(),
+            "multipart form data is not enabled by csrf config"
+        ),
+    }
+}
+
+#[actix_web::test]
+async fn multipart_form_data_enabled() {
+    let app = build_app(
+        CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key()).with_multipart(true),
+    )
+    .await;
+    let (_token, token_cookie, session_id_cookie) = token_cookie(&app, None, None).await;
+
+    let (body, headers) = create_form_data_payload_and_headers(
+        "foo",
+        Some("lorem. txt".to_owned()),
+        Some(mime::TEXT_PLAIN_UTF_8),
+        Bytes::from_static(b"Lorem ipsum dolor sit amet"),
+    );
+
+    let req = test::TestRequest::post()
+        .uri("/submit")
+        .cookie(token_cookie)
+        .cookie(session_id_cookie);
+
+    let req = headers
+        .into_iter()
+        .fold(req, |req, hdr| req.insert_header(hdr))
+        .set_payload(body)
+        .to_request();
+
+    match test::try_call_service(&app, req).await {
+        Ok(resp) => assert!(resp.status().is_success(),),
+        Err(_) => panic!("should not fail here"),
+    }
+}
+
+#[actix_web::test]
+async fn token_should_be_unforgeable() {
+    let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
+    let (_token, token_cookie, _session_cookie) = token_cookie(&app, None, None).await;
+
+    let tok = generate_random_token();
+    let mut mac = HmacSha256::new_from_slice(HMAC_SECRET).expect("HMAC can take key of any size");
+    let message = format!("{}!{}", "HOW-TO-GET-SESSION-ID?=)", tok);
+    mac.update(message.as_bytes());
+
+    let hmac_hex = hex::encode(mac.finalize().into_bytes());
+    let forged_token = format!("{}.{}", hmac_hex, tok);
+
+    let req = test::TestRequest::post()
+        .uri("/submit")
+        .cookie(token_cookie)
+        .insert_header((DEFAULT_HEADER, forged_token))
         .to_request();
     let resp = test::call_service(&app, req).await;
-    assert_eq!(resp.status(), 403);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[actix_web::test]
+async fn token_uniqueness() {
+    let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
+
+    const MAX_COUNT: i32 = 100;
+    let mut tokens = HashSet::new();
+    for _ in 0..MAX_COUNT {
+        let (token, _, _) = token_cookie(&app, None, None).await;
+        tokens.insert(token);
+    }
+
+    assert_eq!(
+        tokens.len() as i32,
+        MAX_COUNT,
+        "CSRF tokens should be unique"
+    );
 }
