@@ -48,6 +48,7 @@ pub struct CsrfDoubleSubmitCookie {
 #[derive(Clone)]
 pub struct CsrfMiddlewareConfig {
     pub pattern: CsrfPattern,
+    pub manual_multipart: bool,
     pub session_id_cookie_name: String,
     pub token_cookie_name: String,
     pub token_form_field: String,
@@ -71,6 +72,7 @@ impl CsrfMiddlewareConfig {
             secret_key: None,
             skip_for: vec![],
             on_error: Rc::new(|_| HttpResponse::BadRequest().body("Invalid CSRF token")),
+            manual_multipart: false,
         }
     }
 
@@ -89,7 +91,18 @@ impl CsrfMiddlewareConfig {
             secret_key: Some(Vec::from(secret_key)),
             skip_for: vec![],
             on_error: Rc::new(|_| HttpResponse::BadRequest().body("Invalid CSRF token")),
+            manual_multipart: false,
         }
+    }
+
+    pub fn with_multipart(mut self, multipart: bool) -> Self {
+        self.manual_multipart = multipart;
+        self
+    }
+
+    pub fn with_token_cookie_config(mut self, config: CsrfDoubleSubmitCookie) -> Self {
+        self.token_cookie_config = Some(config);
+        self
     }
 }
 
@@ -210,9 +223,10 @@ where
             match self.config.pattern {
                 CsrfPattern::DoubleSubmitCookie => {
                     let (session_id, should_set_session) = self.get_session_id(&req);
-                    let (token, should_set_token) = self.get_token_from_cookie(&session_id, &req);
+                    let (cookie_token, should_set_token) =
+                        self.get_token_from_cookie(&session_id, &req);
                     (
-                        token,
+                        cookie_token,
                         should_set_token,
                         Some((session_id, should_set_session)),
                     )
@@ -289,10 +303,10 @@ where
             });
         }
 
+        // process mutating request
         let service = self.service.clone();
         let config = self.config.clone();
 
-        // process mutating request
         Box::pin(async move {
             let (http_req, mut payload) = req.into_parts();
             let session_id = if let Some((id, _should_set)) = cookie_session {
@@ -301,8 +315,27 @@ where
                 None
             };
 
+            // handle manual multipart form data
+            if let Some(ct) = http_req
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|hv| hv.to_str().ok())
+            {
+                if ct.starts_with("multipart/form-data") {
+                    if !config.manual_multipart {
+                        return Err(actix_web::error::ErrorBadRequest(
+                            "multipart form data is not enabled by csrf config",
+                        ));
+                    }
+
+                    let req = ServiceRequest::from_parts(http_req, payload);
+                    let res = service.call(req).await?.map_into_left_body();
+                    return Ok(res);
+                }
+            }
+
             // try to extract token from header or form data
-            let token = if let Some(header_token) = http_req
+            let client_token = if let Some(header_token) = http_req
                 .headers()
                 .get(&config.token_header_name)
                 .and_then(|hv| hv.to_str().ok())
@@ -319,7 +352,9 @@ where
 
             let valid = match config.pattern {
                 #[cfg(feature = "actix-session")]
-                CsrfPattern::SynchronizerToken => eq_tokens(token.as_bytes(), token.as_bytes()),
+                CsrfPattern::SynchronizerToken => {
+                    eq_tokens(client_token.as_bytes(), token.as_bytes())
+                }
                 CsrfPattern::DoubleSubmitCookie => {
                     if let Some(id) = session_id {
                         let secret = match config.secret_key.as_ref() {
@@ -330,7 +365,7 @@ where
                                 ));
                             }
                         };
-                        validate_hmac_token(&id, &token, secret)?
+                        validate_hmac_token(&id, &client_token, secret)?
                     } else {
                         return Err(actix_web::error::ErrorInternalServerError(
                             "session or pre-session id is not set",
@@ -473,4 +508,26 @@ pub fn validate_hmac_token(session_id: &str, token: &str, secret: &[u8]) -> Resu
     let hmac_bytes = hex::decode(hmac_hex).map_err(actix_web::error::ErrorInternalServerError)?;
 
     Ok(eq_tokens(&expected_hmac, &hmac_bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SESSION_ID: &str = "test";
+    const SECRET: &str = "secret";
+
+    #[test]
+    fn test_generate_and_validate_hmac_token() {
+        let token = generate_hmac_token(SESSION_ID, SECRET.as_bytes());
+        let res = validate_hmac_token(SESSION_ID, &token, SECRET.as_bytes());
+        assert!(res.unwrap());
+    }
+
+    #[test]
+    fn test_handle_invalid_hmac_token() {
+        let token = generate_hmac_token(SESSION_ID, SECRET.as_bytes());
+        let res = validate_hmac_token(SESSION_ID, &token, SECRET.as_bytes());
+        assert!(res.unwrap());
+    }
 }
