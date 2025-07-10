@@ -68,7 +68,7 @@ impl CsrfMiddlewareConfig {
             token_cookie_config: None,
             secret_key: None,
             skip_for: vec![],
-            on_error: Rc::new(|_| HttpResponse::Forbidden().body("Invalid CSRF token")),
+            on_error: Rc::new(|_| HttpResponse::BadRequest().body("Invalid CSRF token")),
         }
     }
 
@@ -86,7 +86,7 @@ impl CsrfMiddlewareConfig {
             }),
             secret_key: Some(Vec::from(secret_key)),
             skip_for: vec![],
-            on_error: Rc::new(|_| HttpResponse::Forbidden().body("Invalid CSRF token")),
+            on_error: Rc::new(|_| HttpResponse::BadRequest().body("Invalid CSRF token")),
         }
     }
 }
@@ -292,7 +292,6 @@ where
 
         let service = Rc::clone(&self.service);
         let config = self.config.clone();
-        let token = token.clone();
 
         Box::pin(async move {
             let (http_req, mut payload) = req.into_parts();
@@ -307,63 +306,39 @@ where
                 .get(&config.token_header_name)
                 .and_then(|hv| hv.to_str().ok());
 
-            let mut valid = if let Some(header_token) = header_token {
-                match config.pattern {
-                    #[cfg(feature = "actix-session")]
-                    CsrfPattern::SynchronizerToken => {
-                        eq_tokens(token.as_bytes(), header_token.as_bytes())
-                    }
-                    CsrfPattern::DoubleSubmitCookie => {
-                        if let Some(id) = session_id {
-                            let secret = match config.secret_key.as_ref() {
-                                Some(secret) => secret,
-                                None => {
-                                    return Err(actix_web::error::ErrorInternalServerError(
-                                        "cookie secret is not set",
-                                    ));
-                                }
-                            };
-                            Self::validate_token(header_token, id, secret)
-                        } else {
-                            return Err(actix_web::error::ErrorInternalServerError(
-                                "session id is not set",
-                            ));
-                        }
-                    }
-                }
+            let token = if let Some(header_token) = header_token {
+                header_token.to_string()
+            } else if let Some(body_token) =
+                try_to_extract_from_body(&http_req, &mut payload, &config).await
+            {
+                body_token
             } else {
-                false
+                return Err(actix_web::error::ErrorForbidden(
+                    "csrf token is not present in request",
+                ));
             };
 
-            if !valid {
-                if let Some(body_token) =
-                    try_to_extract_token_from_body(&http_req, &mut payload, &config).await
-                {
-                    valid = match config.pattern {
-                        #[cfg(feature = "actix-session")]
-                        CsrfPattern::SynchronizerToken => {
-                            eq_tokens(token.as_bytes(), body_token.as_bytes())
-                        }
-                        CsrfPattern::DoubleSubmitCookie => {
-                            if let Some(id) = session_id {
-                                let secret = match config.secret_key.as_ref() {
-                                    Some(secret) => secret,
-                                    None => {
-                                        return Err(actix_web::error::ErrorInternalServerError(
-                                            "cookie secret is not set",
-                                        ));
-                                    }
-                                };
-                                Self::validate_token(&body_token, id, secret)
-                            } else {
+            let valid = match config.pattern {
+                #[cfg(feature = "actix-session")]
+                CsrfPattern::SynchronizerToken => eq_tokens(token.as_bytes(), token.as_bytes()),
+                CsrfPattern::DoubleSubmitCookie => {
+                    if let Some(id) = session_id {
+                        let secret = match config.secret_key.as_ref() {
+                            Some(secret) => secret,
+                            None => {
                                 return Err(actix_web::error::ErrorInternalServerError(
-                                    "session id is not set",
+                                    "csrf cookie secret is not set",
                                 ));
                             }
-                        }
-                    };
+                        };
+                        Self::validate_token(&token, id, secret)
+                    } else {
+                        return Err(actix_web::error::ErrorInternalServerError(
+                            "session id is not set",
+                        ));
+                    }
                 }
-            }
+            };
 
             if !valid {
                 let response = (config.on_error)(&http_req);
@@ -402,7 +377,7 @@ where
     }
 }
 
-async fn try_to_extract_token_from_body(
+async fn try_to_extract_from_body(
     req: &HttpRequest,
     payload: &mut actix_web::dev::Payload,
     config: &CsrfMiddlewareConfig,
