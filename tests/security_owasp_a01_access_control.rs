@@ -43,8 +43,8 @@ async fn test_token_privilege_escalation_attempt() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
 
     // Get token for one session
-    let (token1, cookie1, session1) = token_cookie(&app, None, None).await;
-    let (token2, cookie2, session2) = token_cookie(&app, None, None).await;
+    let (token1, _cookie1, _session1) = token_cookie(&app, None, None).await;
+    let (_token2, cookie2, session2) = token_cookie(&app, None, None).await;
 
     // Try to use token1 with session2 (cross-session attack)
     let req = test::TestRequest::post()
@@ -63,7 +63,7 @@ async fn test_token_privilege_escalation_attempt() {
 #[actix_web::test]
 async fn test_method_override_bypass_attempt_synchronizer() {
     let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
-    let (token, session_cookie) = token_cookie_sync(&app, None).await;
+    let (_token, session_cookie) = token_cookie_sync(&app, None).await;
 
     // Attempt to bypass CSRF using X-HTTP-Method-Override on a GET route
     let req = test::TestRequest::get() // GET request
@@ -98,8 +98,8 @@ async fn test_token_privilege_escalation_attempt_synchronizer() {
     let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
 
     // Get token for one session
-    let (token1, session1) = token_cookie_sync(&app, None).await;
-    let (token2, session2) = token_cookie_sync(&app, None).await;
+    let (token1, _session1) = token_cookie_sync(&app, None).await;
+    let (_token2, session2) = token_cookie_sync(&app, None).await;
 
     // Try to use token1 with session2 (cross-session attack)
     let req = test::TestRequest::post()
@@ -130,7 +130,7 @@ where
             Error = actix_web::Error,
         >,
 {
-    use actix_csrf_middleware::{DEFAULT_COOKIE_NAME, DEFAULT_SESSION_ID_COOKIE_NAME};
+    use actix_csrf_middleware::DEFAULT_SESSION_ID_COOKIE_NAME;
 
     let req = test::TestRequest::get().uri("/form").to_request();
     let resp = test::call_service(&app, req).await;
