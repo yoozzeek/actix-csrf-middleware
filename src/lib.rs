@@ -387,7 +387,7 @@ where
 }
 
 pin_project! {
-#[project = CsrfBodyReaderWrapperProj]
+    #[project = CsrfBodyReaderWrapperProj]
     pub enum CsrfBodyReaderWrapper<S, B>
     where
         S: Service<ServiceRequest>,
