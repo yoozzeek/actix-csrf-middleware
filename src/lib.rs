@@ -18,6 +18,7 @@ use futures_util::{
     stream::StreamExt,
 };
 use hmac::{Hmac, Mac};
+#[cfg(feature = "actix-session")]
 use log::error;
 use pin_project_lite::pin_project;
 use rand::RngCore;
@@ -127,12 +128,14 @@ impl CsrfMiddlewareConfig {
 }
 
 pub struct CsrfMiddleware {
-    config: CsrfMiddlewareConfig,
+    config: Rc<CsrfMiddlewareConfig>,
 }
 
 impl CsrfMiddleware {
     pub fn new(config: CsrfMiddlewareConfig) -> Self {
-        Self { config }
+        Self {
+            config: Rc::new(config),
+        }
     }
 }
 
@@ -157,7 +160,7 @@ where
 
 pub struct CsrfMiddlewareService<S> {
     service: Rc<S>,
-    config: CsrfMiddlewareConfig,
+    config: Rc<CsrfMiddlewareConfig>,
 }
 
 impl<S> CsrfMiddlewareService<S> {
@@ -325,7 +328,7 @@ where
                 if !self.config.manual_multipart {
                     let res = HttpResponse::with_body(
                         StatusCode::BAD_REQUEST,
-                        "multipart form data is not enabled by csrf config".to_string(),
+                        "Multipart form data is not enabled by csrf config".to_string(),
                     );
 
                     return Either::right(ok(req
@@ -400,7 +403,7 @@ pin_project! {
         ReadingBody {
             req: Option<ServiceRequest>,
             service: Rc<S>,
-            config: CsrfMiddlewareConfig,
+            config: Rc<CsrfMiddlewareConfig>,
             token: String,
             should_set_token: bool,
             cookie_session: Option<(String, bool)>,
@@ -416,67 +419,66 @@ where
     type Output = Result<ServiceResponse<EitherBody<B>>, Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        loop {
-            match self.as_mut().project() {
-                CsrfBodyReaderWrapperProj::WithToken { csrf_response } => {
-                    return csrf_response.poll(cx);
-                }
-                CsrfBodyReaderWrapperProj::ReadingBody {
-                    req,
-                    service,
-                    config,
-                    token,
-                    should_set_token,
-                    cookie_session,
-                } => {
-                    if let Some(mut request) = req.take() {
-                        let mut body_bytes = BytesMut::new();
-                        let mut payload = request.take_payload();
+        match self.as_mut().project() {
+            CsrfBodyReaderWrapperProj::WithToken { csrf_response } => csrf_response.poll(cx),
+            CsrfBodyReaderWrapperProj::ReadingBody {
+                req,
+                service,
+                config,
+                token,
+                should_set_token,
+                cookie_session,
+            } => {
+                if let Some(mut request) = req.take() {
+                    let mut body_bytes = BytesMut::new();
+                    let mut payload = request.take_payload();
 
-                        while let Some(chunk_result) = ready!(payload.poll_next_unpin(cx)) {
-                            match chunk_result {
-                                Ok(bytes) => body_bytes.extend_from_slice(&bytes),
-                                Err(e) => {
-                                    return Poll::Ready(Err(actix_web::error::ErrorBadRequest(e)));
-                                }
+                    while let Some(chunk_result) = ready!(payload.poll_next_unpin(cx)) {
+                        match chunk_result {
+                            Ok(bytes) => body_bytes.extend_from_slice(&bytes),
+                            Err(e) => {
+                                return Poll::Ready(Err(actix_web::error::ErrorBadRequest(e)));
                             }
                         }
+                    }
 
-                        // Try to extract token from body
-                        let client_token =
-                            match token_from_body_sync(request.headers(), &body_bytes, config) {
-                                Some(token) => Some(token),
-                                None => {
-                                    let res =
-                                        HttpResponse::BadRequest().body("CSRF token is required");
-                                    return Poll::Ready(Ok(request
-                                        .into_response(res)
-                                        .map_into_boxed_body()
-                                        .map_into_right_body()));
-                                }
-                            };
-
-                        // Restore the body for the next handler
-                        request.set_payload(actix_web::dev::Payload::from(body_bytes.freeze()));
-
-                        let csrf_response = CsrfResponse {
-                            fut: service.call(request),
-                            config: config.clone(),
-                            token: token.clone(),
-                            is_mutating: true,
-                            should_validate: true,
-                            should_set_token: *should_set_token,
-                            cookie_session: cookie_session.clone(),
-                            client_token,
-                            _phantom: PhantomData,
+                    // Try to extract token from body
+                    let client_token =
+                        match token_from_body_sync(request.headers(), &body_bytes, config) {
+                            Some(token) => Some(token),
+                            None => {
+                                let res = HttpResponse::BadRequest().body("CSRF token is required");
+                                return Poll::Ready(Ok(request
+                                    .into_response(res)
+                                    .map_into_boxed_body()
+                                    .map_into_right_body()));
+                            }
                         };
 
-                        self.set(CsrfBodyReaderWrapper::WithToken { csrf_response });
-                    } else {
-                        return Poll::Ready(Err(actix_web::error::ErrorInternalServerError(
-                            "Request was already taken",
-                        )));
-                    }
+                    // Restore the body for the next handler
+                    request.set_payload(actix_web::dev::Payload::from(body_bytes.freeze()));
+
+                    let csrf_response = CsrfResponse {
+                        fut: service.call(request),
+                        config: config.clone(),
+                        token: token.clone(),
+                        is_mutating: true,
+                        should_validate: true,
+                        should_set_token: *should_set_token,
+                        cookie_session: cookie_session.clone(),
+                        client_token,
+                        _phantom: PhantomData,
+                    };
+
+                    self.set(CsrfBodyReaderWrapper::WithToken { csrf_response });
+
+                    cx.waker().wake_by_ref(); // wake for the next pool
+                    Poll::Pending
+                } else {
+                    log::error!("middleware state management error: request was already taken");
+                    Poll::Ready(Err(actix_web::error::ErrorInternalServerError(
+                        "Request was already taken",
+                    )))
                 }
             }
         }
@@ -486,7 +488,7 @@ where
 fn token_from_body_sync(
     headers: &HeaderMap,
     body: &[u8],
-    config: &CsrfMiddlewareConfig,
+    config: &Rc<CsrfMiddlewareConfig>,
 ) -> Option<String> {
     if let Some(ct) = headers.get(header::CONTENT_TYPE) {
         if let Ok(ct) = ct.to_str() {
@@ -514,7 +516,7 @@ pin_project! {
     {
         #[pin]
         fut: S::Future,
-        config: CsrfMiddlewareConfig,
+        config: Rc<CsrfMiddlewareConfig>,
         token: String,
         is_mutating: bool,
         should_validate: bool,
