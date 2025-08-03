@@ -49,6 +49,52 @@ where
 
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
+async fn test_synchronizer_token_behavior() {
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let (initial_token, initial_token_cookie) = token_cookie(&app, None).await;
+
+    // Verify no token change on a non-mutating GET
+    let req = test::TestRequest::get()
+        .uri("/form")
+        .cookie(initial_token_cookie.clone())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+
+    // Fetch token again after GET - should be the same
+    let req2 = test::TestRequest::get()
+        .uri("/form")
+        .cookie(initial_token_cookie.clone())
+        .to_request();
+    let resp2 = test::call_service(&app, req2).await;
+    let body = test::read_body(resp2).await;
+    let token_after_get = String::from_utf8(body.to_vec()).unwrap();
+    let token_after_get = token_after_get.strip_prefix("token:").unwrap().to_string();
+
+    assert_eq!(
+        initial_token, token_after_get,
+        "Token should not change on GET request"
+    );
+
+    // Verify token change on a mutating POST
+    let req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header((DEFAULT_HEADER, initial_token.clone()))
+        .cookie(initial_token_cookie.clone())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Fetch new token after POST - should be different
+    let (new_token, _) = token_cookie(&app, None).await;
+    assert_ne!(
+        initial_token, new_token,
+        "Token should refresh on POST mutation"
+    );
+}
+
+#[cfg(feature = "actix-session")]
+#[actix_web::test]
 async fn valid_csrf_header() {
     let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
     let (token, token_cookie) = { token_cookie(&app, None).await };
