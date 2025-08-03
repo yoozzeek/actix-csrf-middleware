@@ -12,9 +12,11 @@ session = ["actix-session"]
 [dependencies]
 actix-web = { version = "4", features = ["compat", "secure-cookies"] }
 actix-session = { version = "0.10", optional = true, features = ["cookie-session"] }
+actix-utils = "3.0.1"
 actix-http = "3.10"
 base64 = "0.22.1"
 futures-util = "0.3.31"
+pin-project-lite = "0.2.16"
 rand = "0.9.1"
 sha2 = "0.10"
 hmac = "0.12"
@@ -38,4 +40,8 @@ harness = false
 
 [[bench]]
 name = "csrf_token"
+harness = false
+
+[[bench]]
+name = "memory_profile"
 harness = false
