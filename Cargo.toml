@@ -6,6 +6,9 @@ license = "MIT"
 authors = ["Andrew <zeek@tuta.com>"]
 repository = "https://github.com/yoozzeek/actix-csrf-middleware"
 keywords = ["security", "csrf", "web", "middleware", "actix-web"]
+description = "CSRF protection middleware for Actix Web applications. Supports double submit cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to configure, and includes test coverage for common attacks and edge cases."
+documentation = "https://docs.rs/actix-csrf-middleware"
+rust-version = "1.85.0"
 
 [lib]
 crate-type = ["rlib"]

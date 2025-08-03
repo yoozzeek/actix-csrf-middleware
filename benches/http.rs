@@ -2,6 +2,37 @@ use actix_csrf_middleware::{
     CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken, DEFAULT_COOKIE_NAME, DEFAULT_FORM_FIELD,
     DEFAULT_HEADER, PRE_SESSION_COOKIE_NAME,
 };
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+struct TrackingAllocator;
+
+static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
+static DEALLOCATED: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for TrackingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ret = System.alloc(layout);
+        if !ret.is_null() {
+            ALLOCATED.fetch_add(layout.size(), Ordering::SeqCst);
+        }
+        ret
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        System.dealloc(ptr, layout);
+        DEALLOCATED.fetch_add(layout.size(), Ordering::SeqCst);
+    }
+}
+
+#[global_allocator]
+static GLOBAL: TrackingAllocator = TrackingAllocator;
+
+fn get_memory_usage() -> (usize, usize) {
+    let allocated = ALLOCATED.load(Ordering::SeqCst);
+    let deallocated = DEALLOCATED.load(Ordering::SeqCst);
+    (allocated, allocated.saturating_sub(deallocated))
+}
 #[cfg(feature = "actix-session")]
 use actix_session::{
     SessionMiddleware, config::CookieContentSecurity, storage::CookieSessionStore,
@@ -45,7 +76,11 @@ fn get_session_middleware() -> SessionMiddleware<CookieSessionStore> {
 
 #[cfg(feature = "actix-session")]
 async fn synchronizer_token_benchmark() {
-    println!("Run benchmark for synchronizer token pattern...");
+    println!("\nSynchronizer Token Pattern:");
+    println!("---------------------------");
+
+    let (_start_allocated, start_net) = get_memory_usage();
+    let _start_time = Instant::now();
 
     let cfg = CsrfMiddlewareConfig::synchronizer_token();
     let app = test::init_service(
@@ -84,12 +119,19 @@ async fn synchronizer_token_benchmark() {
         assert!(resp.status().is_success());
     }
 
+    let (_end_allocated, end_net) = get_memory_usage();
     let elapsed = start.elapsed();
-    println!("Parse token from header:");
-    println!("{} iterations took: {:?}", iterations, elapsed);
+    println!("\nParse token from header:");
     println!(
-        "Avg per flow: {:.3}us",
-        elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64
+        "After {} iterations - Allocated: {} bytes, Net: {} bytes",
+        iterations,
+        end_net - start_net,
+        end_net - start_net
+    );
+    println!("Time elapsed: {:?}", elapsed);
+    println!(
+        "Requests per second: {:.2}",
+        iterations as f64 / elapsed.as_secs_f64()
     );
 
     let start = Instant::now();
@@ -124,12 +166,19 @@ async fn synchronizer_token_benchmark() {
         assert!(resp.status().is_success());
     }
 
+    let (_end_allocated, end_net) = get_memory_usage();
     let elapsed = start.elapsed();
-    println!("Parse token from form field:");
-    println!("{} iterations took: {:?}", iterations, elapsed);
+    println!("\nParse token from form field:");
     println!(
-        "Avg per flow: {:.3}us",
-        elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64
+        "After {} iterations - Allocated: {} bytes, Net: {} bytes",
+        iterations,
+        end_net - start_net,
+        end_net - start_net
+    );
+    println!("Time elapsed: {:?}", elapsed);
+    println!(
+        "Requests per second: {:.2}",
+        iterations as f64 / elapsed.as_secs_f64()
     );
 
     let start = Instant::now();
@@ -160,17 +209,28 @@ async fn synchronizer_token_benchmark() {
         assert!(resp.status().is_success());
     }
 
+    let (_end_allocated, end_net) = get_memory_usage();
     let elapsed = start.elapsed();
-    println!("Parse token from json payload:");
-    println!("{} iterations took: {:?}", iterations, elapsed);
+    println!("\nParse token from json payload:");
     println!(
-        "Avg per flow: {:.3}us",
-        elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64
+        "After {} iterations - Allocated: {} bytes, Net: {} bytes",
+        iterations,
+        end_net - start_net,
+        end_net - start_net
+    );
+    println!("Time elapsed: {:?}", elapsed);
+    println!(
+        "Requests per second: {:.2}",
+        iterations as f64 / elapsed.as_secs_f64()
     );
 }
 
 async fn double_submit_cookie_benchmark() {
-    println!("Run benchmark for signed double submit cookie pattern...");
+    println!("\nSigned Double Submit Cookie Pattern:");
+    println!("----------------------------");
+
+    let (_start_allocated, start_net) = get_memory_usage();
+    let _start_time = Instant::now();
 
     let cfg = CsrfMiddlewareConfig::double_submit_cookie(&secret_key());
     let app = test::init_service(
@@ -214,12 +274,19 @@ async fn double_submit_cookie_benchmark() {
         assert!(resp.status().is_success());
     }
 
+    let (_end_allocated, end_net) = get_memory_usage();
     let elapsed = start.elapsed();
-    println!("Parse token from header:");
-    println!("{} iterations took: {:?}", iterations, elapsed);
+    println!("\nParse token from header:");
     println!(
-        "Avg per flow: {:.3}us",
-        elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64
+        "After {} iterations - Allocated: {} bytes, Net: {} bytes",
+        iterations,
+        end_net - start_net,
+        end_net - start_net
+    );
+    println!("Time elapsed: {:?}", elapsed);
+    println!(
+        "Requests per second: {:.2}",
+        iterations as f64 / elapsed.as_secs_f64()
     );
 
     let start = Instant::now();
@@ -262,12 +329,19 @@ async fn double_submit_cookie_benchmark() {
         assert!(resp.status().is_success());
     }
 
+    let (end_allocated, end_net) = get_memory_usage();
     let elapsed = start.elapsed();
-    println!("Parse token from form field:");
-    println!("{} iterations took: {:?}", iterations, elapsed);
+    println!("\nParse token from form field:");
     println!(
-        "Avg per flow: {:.3}us",
-        elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64
+        "After {} iterations - Allocated: {} bytes, Net: {} bytes",
+        iterations,
+        end_net - start_net,
+        end_net - start_net
+    );
+    println!("Time elapsed: {:?}", elapsed);
+    println!(
+        "Requests per second: {:.2}",
+        iterations as f64 / elapsed.as_secs_f64()
     );
 
     let start = Instant::now();
@@ -305,21 +379,34 @@ async fn double_submit_cookie_benchmark() {
         assert!(resp.status().is_success());
     }
 
+    let (_end_allocated, end_net) = get_memory_usage();
     let elapsed = start.elapsed();
-    println!("Parse token from json payload:");
-    println!("{} iterations took: {:?}", iterations, elapsed);
+    println!("\nParse token from json payload:");
     println!(
-        "Avg per flow: {:.3}us",
-        elapsed.as_secs_f64() * 1_000_000.0 / iterations as f64
+        "After {} iterations - Allocated: {} bytes, Net: {} bytes",
+        iterations,
+        end_net - start_net,
+        end_net - start_net
+    );
+    println!("Time elapsed: {:?}", elapsed);
+    println!(
+        "Requests per second: {:.2}",
+        iterations as f64 / elapsed.as_secs_f64()
     );
 }
 
 #[actix_rt::main]
 async fn main() {
+    println!("HTTP Performance Benchmarks for actix-csrf-middleware");
+    println!("======================================================");
+
+    // Reset memory counters
+    ALLOCATED.store(0, Ordering::SeqCst);
+    DEALLOCATED.store(0, Ordering::SeqCst);
+
     #[cfg(feature = "actix-session")]
     {
         synchronizer_token_benchmark().await;
-        println!();
     }
     double_submit_cookie_benchmark().await;
 }
