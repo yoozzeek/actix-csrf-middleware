@@ -280,14 +280,13 @@ where
         // Handle read-only request and set csrf token if needed
         if !is_mutating {
             if should_set_token {
-                // Actix session is available only in this scope and token should be set here
                 #[cfg(feature = "actix-session")]
                 if self.config.pattern == CsrfPattern::SynchronizerToken {
-                    let new_token = generate_random_token();
-                    match session.insert(&self.config.token_cookie_name, new_token) {
+                    // Store the current token in session so it's available for validation
+                    match session.insert(&self.config.token_cookie_name, token.clone()) {
                         Ok(()) => {}
                         Err(e) => {
-                            error!("failed to inset csrf token into session: {:?}", e);
+                            error!("failed to insert csrf token into session: {:?}", e);
                             let res = HttpResponse::with_body(
                                 StatusCode::INTERNAL_SERVER_ERROR,
                                 "Failed to insert CSRF token into session".to_string(),
@@ -317,26 +316,6 @@ where
                 },
             });
         }
-
-        // Refresh csrf token for the next request here if token stored in actix session
-        #[cfg(feature = "actix-session")]
-        if self.config.pattern == CsrfPattern::SynchronizerToken {
-            let refreshed_token = generate_random_token();
-            if let Err(e) = session.insert(self.config.token_cookie_name.clone(), refreshed_token) {
-                error!("failed to refresh csrf token into session: {:?}", e);
-                let res = HttpResponse::with_body(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to refresh CSRF token into session".to_string(),
-                );
-
-                return Either::right(ok(req
-                    .into_response(res)
-                    .map_into_boxed_body()
-                    .map_into_right_body()));
-            }
-        }
-
-        // For double submit cookie, next csrf token will be set in CsrfResponse
 
         // Handle manual multipart form data protection
         if let Some(ct) = req
@@ -615,7 +594,7 @@ where
                     token
                 } else {
                     // No client token found, return error response
-                    let res = HttpResponse::BadRequest().body("CSRF token is required");
+                    let res = HttpResponse::BadRequest().body("CSRF token is missing");
                     return Poll::Ready(Ok(resp
                         .into_response(res)
                         .map_into_boxed_body()
