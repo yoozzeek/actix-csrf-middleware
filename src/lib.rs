@@ -224,7 +224,6 @@ where
     forward_ready!(service);
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        // Skip "safe" urls
         let req_path = req.path();
         if self
             .config
@@ -543,7 +542,9 @@ where
             Ok(mut resp) => {
                 // Set csrf token as double submit cookie in case of non mutating request
                 if !*this.is_mutating {
-                    if this.config.pattern == CsrfPattern::DoubleSubmitCookie {
+                    if *this.should_set_token
+                        && this.config.pattern == CsrfPattern::DoubleSubmitCookie
+                    {
                         let cookie_config = match &config.token_cookie_config {
                             Some(config) => config,
                             None => {
