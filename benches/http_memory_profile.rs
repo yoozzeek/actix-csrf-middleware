@@ -1,14 +1,19 @@
-use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken};
+use actix_csrf_middleware::{
+    CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken, DEFAULT_COOKIE_NAME, DEFAULT_FORM_FIELD,
+    DEFAULT_HEADER, PRE_SESSION_COOKIE_NAME,
+};
 #[cfg(feature = "session")]
-use actix_session::{SessionMiddleware, config::CookieContentSecurity, storage::CookieSessionStore};
-use actix_web::{App, HttpRequest, HttpResponse, HttpServer, test, web};
-#[cfg(feature = "session")]
+use actix_session::{
+    SessionMiddleware, config::CookieContentSecurity, storage::CookieSessionStore,
+};
 use actix_web::cookie::Key;
+use actix_web::http::header::ContentType;
+use actix_web::{App, HttpResponse, HttpRequest, test, web};
+use serde_json::json;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-// Custom allocator to track memory usage
 struct TrackingAllocator;
 
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
@@ -48,20 +53,19 @@ async fn post_handler(_req: HttpRequest) -> HttpResponse {
 
 #[actix_rt::main]
 async fn main() {
-    println!("Memory and CPU profiling for actix-csrf-middleware");
-    println!("==================================================");
+    println!("HTTP and Memory Profiling for actix-csrf-middleware");
+    println!("======================================================");
 
-    // Reset counters
+    // Reset memory counters
     ALLOCATED.store(0, Ordering::SeqCst);
     DEALLOCATED.store(0, Ordering::SeqCst);
 
     let start_time = Instant::now();
     let (start_allocated, start_net) = get_memory_usage();
 
-    // Test Double Submit Cookie Pattern
+    // Double Submit Cookie Pattern Test
     let secret_key = b"test-secret-key-32-bytes-long!!!";
     let config = CsrfMiddlewareConfig::double_submit_cookie(secret_key).with_multipart(true);
-
     let app = test::init_service(
         App::new()
             .wrap(CsrfMiddleware::new(config))
@@ -130,8 +134,8 @@ async fn main() {
         (iterations * 2) as f64 / (end_time - start_time).as_secs_f64()
     );
 
-    // Test Synchronizer Token Pattern if feature is enabled
-#[cfg(feature = "session")]
+    // Synchronizer Token Pattern Test if feature is enabled
+    #[cfg(feature = "session")]
     {
         println!("\n\nSynchronizer Token Pattern:");
         println!("---------------------------");

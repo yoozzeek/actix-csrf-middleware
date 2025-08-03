@@ -50,5 +50,5 @@ name = "csrf_token"
 harness = false
 
 [[bench]]
-name = "memory_profile"
+name = "http_memory_profile"
 harness = false
