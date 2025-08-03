@@ -138,9 +138,8 @@ impl CsrfMiddleware {
 
 impl<S, B> Transform<S, ServiceRequest> for CsrfMiddleware
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
-    S::Future: 'static,
-    B: MessageBody + 'static,
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    B: MessageBody,
 {
     type Response = ServiceResponse<EitherBody<B>>;
     type Error = Error;
