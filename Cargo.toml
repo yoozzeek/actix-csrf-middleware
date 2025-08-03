@@ -38,10 +38,6 @@ actix-rt = "2.10"
 actix-multipart = "0.7.2"
 
 [[bench]]
-name = "http"
-harness = false
-
-[[bench]]
 name = "hmac_token"
 harness = false
 
