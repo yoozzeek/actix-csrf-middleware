@@ -645,7 +645,6 @@ where
                 let valid = match config.pattern {
                     #[cfg(feature = "actix-session")]
                     CsrfPattern::SynchronizerToken => {
-                        println!("TOKENC: {}; TOKENT: {}", client_token, this.token);
                         eq_tokens(client_token.as_bytes(), this.token.as_bytes())
                     }
                     CsrfPattern::DoubleSubmitCookie => {

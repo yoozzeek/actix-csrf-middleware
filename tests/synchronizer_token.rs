@@ -151,10 +151,8 @@ async fn missing_csrf_token() {
         .cookie(token_cookie)
         .to_request();
 
-    match test::try_call_service(&app, req).await {
-        Ok(_) => panic!("should not fail here"),
-        Err(err) => assert_eq!(err.to_string(), "csrf token is not present in request"),
-    }
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[cfg(feature = "actix-session")]
@@ -175,6 +173,62 @@ async fn token_refresh_on_successful_mutation() {
     // GET new token (should be refreshed)
     let (new_token, _token2_cookie) = { token_cookie(&app, None).await };
     assert_ne!(token1, new_token, "Token should be refreshed after POST");
+}
+
+#[cfg(feature = "actix-session")]
+#[actix_web::test]
+async fn synchronizer_token_format() {
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let (token, _token_cookie) = token_cookie(&app, None).await;
+
+    // Synchronizer token should be a 32-byte base64url encoded string (43 chars without padding)
+    assert_eq!(
+        token.len(),
+        43,
+        "Synchronizer token should be 43 characters (32 bytes base64url)"
+    );
+
+    // Should contain only valid base64url characters
+    assert!(
+        token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "Synchronizer token should contain only base64url characters"
+    );
+
+    // Should not contain HMAC format (no dot separator)
+    assert!(
+        !token.contains('.'),
+        "Synchronizer token should not contain dot separator (not HMAC format)"
+    );
+}
+
+#[cfg(feature = "actix-session")]
+#[actix_web::test]
+async fn csrf_token_rotation() {
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let (initial_token, initial_token_cookie) = token_cookie(&app, None).await;
+
+    // Perform a POST request with the initial token
+    let req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header((DEFAULT_HEADER, initial_token.clone()))
+        .cookie(initial_token_cookie)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Get a new token after the mutation
+    let (new_token, _new_token_cookie) = token_cookie(&app, None).await;
+    assert_ne!(
+        initial_token, new_token,
+        "CSRF token should be refreshed after mutation"
+    );
+    assert_eq!(
+        new_token.len(),
+        43,
+        "Synchronizer token should be a 32-byte base64 string"
+    );
 }
 
 #[cfg(feature = "actix-session")]

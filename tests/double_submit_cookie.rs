@@ -180,6 +180,54 @@ async fn missing_csrf_token() {
 }
 
 #[actix_web::test]
+async fn double_submit_cookie_token_format() {
+    let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
+    let (token, _token_cookie, _session_id_cookie) = token_cookie(&app, None, None).await;
+    
+    // Double submit cookie token should be in HMAC format: "hex_hmac.base64url_token"
+    assert!(token.contains('.'), "Double submit cookie token should contain dot separator (HMAC format)");
+    
+    let parts: Vec<&str> = token.split('.').collect();
+    assert_eq!(parts.len(), 2, "Double submit cookie token should have exactly 2 parts separated by dot");
+    
+    let (hmac_hex, csrf_token) = (parts[0], parts[1]);
+    
+    // HMAC part should be hex (64 chars for SHA256)
+    assert_eq!(hmac_hex.len(), 64, "HMAC part should be 64 hex characters (SHA256)");
+    assert!(hmac_hex.chars().all(|c| c.is_ascii_hexdigit()), "HMAC part should contain only hex characters");
+    
+    // Token part should be 32-byte base64url (43 chars)
+    assert_eq!(csrf_token.len(), 43, "Token part should be 43 characters (32 bytes base64url)");
+    assert!(csrf_token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'), 
+            "Token part should contain only base64url characters");
+}
+
+#[actix_web::test]
+async fn double_submit_cookie_token_rotation() {
+    let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
+    let (initial_token, initial_token_cookie, initial_session_cookie) = token_cookie(&app, None, None).await;
+
+    // Perform a POST request with the initial token
+    let req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header((DEFAULT_HEADER, initial_token.clone()))
+        .cookie(initial_token_cookie)
+        .cookie(initial_session_cookie)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Get a new token after the mutation
+    let (new_token, _new_token_cookie, _new_session_id_cookie) = token_cookie(&app, None, None).await;
+    assert_ne!(initial_token, new_token, "CSRF token should be refreshed after mutation");
+    
+    // Verify the new token is still in correct HMAC format
+    assert!(new_token.contains('.'), "New token should maintain HMAC format");
+    let parts: Vec<&str> = new_token.split('.').collect();
+    assert_eq!(parts.len(), 2, "New token should have HMAC format with 2 parts");
+}
+
+#[actix_web::test]
 async fn token_refresh_on_successful_mutation() {
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
     let (token1, token1_cookie, session1_cookie) = { token_cookie(&app, None, None).await };
