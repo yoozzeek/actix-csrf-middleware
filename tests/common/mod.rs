@@ -53,8 +53,8 @@ pub fn configure_routes(cfg: &mut web::ServiceConfig) {
 fn get_session_middleware() -> SessionMiddleware<CookieSessionStore> {
     SessionMiddleware::builder(CookieSessionStore::default(), test_key())
         .cookie_content_security(CookieContentSecurity::Private)
-        .cookie_secure(true)
+        .cookie_secure(false)  // Set to false for testing (no HTTPS in tests)
         .cookie_http_only(true)
-        .cookie_same_site(SameSite::Strict)
+        .cookie_same_site(SameSite::Lax)  // Lax instead of Strict for testing
         .build()
 }

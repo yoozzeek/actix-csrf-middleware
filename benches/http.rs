@@ -1,16 +1,15 @@
 use actix_csrf_middleware::{
     CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken, DEFAULT_COOKIE_NAME, DEFAULT_FORM_FIELD,
-    DEFAULT_HEADER, DEFAULT_SESSION_ID_COOKIE_NAME,
+    DEFAULT_HEADER, PRE_SESSION_COOKIE_NAME,
 };
 #[cfg(feature = "actix-session")]
 use actix_session::{
     SessionMiddleware, config::CookieContentSecurity, storage::CookieSessionStore,
 };
-use actix_web::cookie::{Key, SameSite};
+use actix_web::cookie::Key;
 use actix_web::http::header::ContentType;
 use actix_web::{App, HttpResponse, test, web};
 use serde_json::json;
-use std::fmt::format;
 use std::time::Instant;
 
 fn secret_key() -> Vec<u8> {
@@ -40,10 +39,11 @@ fn get_session_middleware() -> SessionMiddleware<CookieSessionStore> {
         .cookie_content_security(CookieContentSecurity::Private)
         .cookie_secure(true)
         .cookie_http_only(true)
-        .cookie_same_site(SameSite::Strict)
+        .cookie_same_site(actix_web::cookie::SameSite::Strict)
         .build()
 }
 
+#[cfg(feature = "actix-session")]
 async fn synchronizer_token_benchmark() {
     println!("Run benchmark for synchronizer token pattern...");
 
@@ -190,7 +190,7 @@ async fn double_submit_cookie_benchmark() {
         let session_id_cookie = resp
             .response()
             .cookies()
-            .find(|c| c.name() == DEFAULT_SESSION_ID_COOKIE_NAME)
+            .find(|c| c.name() == PRE_SESSION_COOKIE_NAME)
             .map(|c| c.into_owned())
             .unwrap();
 
@@ -231,7 +231,7 @@ async fn double_submit_cookie_benchmark() {
         let session_id_cookie = resp
             .response()
             .cookies()
-            .find(|c| c.name() == DEFAULT_SESSION_ID_COOKIE_NAME)
+            .find(|c| c.name() == PRE_SESSION_COOKIE_NAME)
             .map(|c| c.into_owned())
             .unwrap();
 
@@ -279,7 +279,7 @@ async fn double_submit_cookie_benchmark() {
         let session_id_cookie = resp
             .response()
             .cookies()
-            .find(|c| c.name() == DEFAULT_SESSION_ID_COOKIE_NAME)
+            .find(|c| c.name() == PRE_SESSION_COOKIE_NAME)
             .map(|c| c.into_owned())
             .unwrap();
 
@@ -316,7 +316,10 @@ async fn double_submit_cookie_benchmark() {
 
 #[actix_rt::main]
 async fn main() {
-    synchronizer_token_benchmark().await;
-    println!();
+    #[cfg(feature = "actix-session")]
+    {
+        synchronizer_token_benchmark().await;
+        println!();
+    }
     double_submit_cookie_benchmark().await;
 }
