@@ -1,19 +1,19 @@
-use actix_http::{StatusCode, header::HeaderMap};
+use actix_http::{header::HeaderMap, StatusCode};
 #[cfg(feature = "actix-session")]
 use actix_session::SessionExt;
 use actix_utils::future::Either;
 use actix_web::{
-    Error, FromRequest, HttpMessage, HttpRequest, HttpResponse,
     body::{EitherBody, MessageBody},
     cookie::{Cookie, SameSite},
     dev::forward_ready,
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
-    http::{Method, header},
+    http::{header, Method},
     web::BytesMut,
+    Error, FromRequest, HttpMessage, HttpRequest, HttpResponse,
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::{
-    future::{Ready, err, ok},
+    future::{err, ok, Ready},
     ready,
     stream::StreamExt,
 };
@@ -32,6 +32,7 @@ use std::{
     rc::Rc,
     task::{Context, Poll},
 };
+use subtle::ConstantTimeEq;
 
 pub const PRE_SESSION_COOKIE_NAME: &str = "pre-session";
 
@@ -647,7 +648,8 @@ where
                 let valid = match config.pattern {
                     #[cfg(feature = "actix-session")]
                     CsrfPattern::SynchronizerToken => {
-                        eq_tokens(client_token.as_bytes(), this.token.as_bytes())
+                        let token_bytes = this.token.as_bytes();
+                        token_bytes.ct_eq(client_token.as_bytes()).unwrap_u8() == 1
                     }
                     CsrfPattern::DoubleSubmitCookie => {
                         let session_id = if let Some((id, _should_set)) = cookie_session {
@@ -708,17 +710,6 @@ pub fn generate_random_token() -> String {
     URL_SAFE_NO_PAD.encode(buf)
 }
 
-pub fn eq_tokens(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut result = 0;
-    for (x, y) in a.iter().zip(b) {
-        result |= x ^ y;
-    }
-    result == 0
-}
-
 pub fn generate_hmac_token(session_id: &str, secret: &[u8]) -> String {
     let tok = generate_random_token();
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC can take key of any size");
@@ -744,7 +735,7 @@ pub fn validate_hmac_token(session_id: &str, token: &str, secret: &[u8]) -> Resu
 
     let hmac_bytes = hex::decode(hmac_hex).map_err(actix_web::error::ErrorInternalServerError)?;
 
-    Ok(eq_tokens(&expected_hmac, &hmac_bytes))
+    Ok(expected_hmac.ct_eq(&hmac_bytes).unwrap_u8() == 1)
 }
 
 #[cfg(test)]
