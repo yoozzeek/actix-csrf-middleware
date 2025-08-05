@@ -648,8 +648,7 @@ where
                 let valid = match config.pattern {
                     #[cfg(feature = "actix-session")]
                     CsrfPattern::SynchronizerToken => {
-                        let token_bytes = this.token.as_bytes();
-                        token_bytes.ct_eq(client_token.as_bytes()).unwrap_u8() == 1
+                        eq_tokens(this.token.as_bytes(), client_token.as_bytes())
                     }
                     CsrfPattern::DoubleSubmitCookie => {
                         let session_id = if let Some((id, _should_set)) = cookie_session {
@@ -710,6 +709,10 @@ pub fn generate_random_token() -> String {
     URL_SAFE_NO_PAD.encode(buf)
 }
 
+pub fn eq_tokens(token_a: &[u8], token_b: &[u8]) -> bool {
+    token_a.ct_eq(token_b).unwrap_u8() == 1
+}
+
 pub fn generate_hmac_token(session_id: &str, secret: &[u8]) -> String {
     let tok = generate_random_token();
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC can take key of any size");
@@ -735,7 +738,7 @@ pub fn validate_hmac_token(session_id: &str, token: &str, secret: &[u8]) -> Resu
 
     let hmac_bytes = hex::decode(hmac_hex).map_err(actix_web::error::ErrorInternalServerError)?;
 
-    Ok(expected_hmac.ct_eq(&hmac_bytes).unwrap_u8() == 1)
+    Ok(eq_tokens(&expected_hmac, &hmac_bytes))
 }
 
 #[cfg(test)]

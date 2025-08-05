@@ -1,5 +1,5 @@
 use actix_csrf_middleware::{eq_tokens, generate_random_token};
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, Criterion};
 
 fn bench_csrf_token_gen(c: &mut Criterion) {
     c.bench_function("generate_csrf_token", |b| b.iter(generate_random_token));
