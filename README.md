@@ -11,6 +11,7 @@ test coverage for common attacks and edge cases.
   the [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
     - CSRF token is a 256-bit cryptographically secure random value
     - For the double submit cookie pattern, hashes the session/pre-session ID with the CSRF token using HMAC-SHA256
+    - Compares tokens in constant time to prevent timing attacks
 - Protect unauthorized routes with signed, stateless pre-sessions
 - Automatically extract and verify tokens from:
     - `application/json`
@@ -18,7 +19,8 @@ test coverage for common attacks and edge cases.
 - Configurable cookie, header, and form field names
 - Helpers for manually extracting and validating CSRF tokens at the handler level—useful for protecting
   `multipart/form-data` requests with binary files without reading the body in middleware
-- Enabled by default for all requests; supports per-path CSRF exclusion via `skip_for`
+- Enabled by default for all mutating (`POST`,`PUT`,`PATCH`,`DELETE`) http requests; supports per-path CSRF exclusion
+  via `skip_for`.
 - Custom error handler (coming soon)
 
 ## Examples
@@ -119,18 +121,6 @@ special methods such as `with_skip_for`, `with_multipart`, `with_on_error`, etc.
 * `secret_key`:
 * `skip_for`:
 * `on_error`:
-
-## Security
-
-This code is implemented
-following [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
-It uses simple and robust double submit cookie pattern.
-
-- Uses the signed double submit cookie pattern (per OWASP)
-- Token is 256-bit, base64url encoded, cryptographically secure random
-- Secure against CSRF and cookie injection (using HMAC with session/pre-session ID)
-- All mutating requests (POST/PUT/PATCH/DELETE) are protected by default
-- Compares tokens in constant time to prevent timing attacks
 
 ## License
 
