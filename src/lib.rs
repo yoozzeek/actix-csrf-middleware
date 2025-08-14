@@ -185,7 +185,7 @@ pub struct CsrfMiddlewareService<S> {
 }
 
 impl<S> CsrfMiddlewareService<S> {
-    fn get_session_id(&self, req: &ServiceRequest) -> (String, bool) {
+    fn get_session_from_cookie(&self, req: &ServiceRequest) -> (String, bool) {
         // Try to extract from session id cookie first,
         // if nothing found then check pre-session or create new one.
         if let Some(id) = req
@@ -268,24 +268,23 @@ where
                 fut: self.service.call(req),
                 config: None,
                 set_token: None,
+                set_pre_session: None,
                 _phantom: PhantomData,
             };
-            return Either::left(CsrfTokenValidator::CsrfResponse {
-                csrf_response: resp,
-            });
+            return Either::left(CsrfTokenValidator::CsrfResponse { response: resp });
         }
 
         // Get current token from cookie or actix-session or generate new one
         let (true_token, should_set_token, cookie_session): (String, bool, Option<(String, bool)>) =
             match self.config.pattern {
                 CsrfPattern::DoubleSubmitCookie => {
-                    let (session_id, should_set_session) = self.get_session_id(&req);
+                    let (session_id, set_pre_session) = self.get_session_from_cookie(&req);
                     let (true_token, should_set_token) =
                         self.get_true_token(&req, Some(&session_id));
                     (
                         true_token,
                         should_set_token,
-                        Some((session_id, should_set_session)),
+                        Some((session_id, set_pre_session)),
                     )
                 }
                 #[cfg(feature = "actix-session")]
@@ -302,16 +301,6 @@ where
             Method::POST | Method::PUT | Method::PATCH | Method::DELETE
         );
 
-        let session_id = if let Some((session_id, should_set_session)) = cookie_session {
-            if !should_set_session {
-                None
-            } else {
-                Some(session_id)
-            }
-        } else {
-            None
-        };
-
         // Skip validation for read only requests, but csrf token still should be
         // added to the response when should_set_token flag is set to true.
         if !is_mutating {
@@ -321,16 +310,25 @@ where
                 None
             };
 
+            let session_id = if let Some((session_id, set_pre_session)) = cookie_session {
+                if set_pre_session {
+                    Some(session_id.into_bytes())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let resp = CsrfResponse {
                 fut: self.service.call(req),
                 config: Some(self.config.clone()),
                 set_token: token,
+                set_pre_session: session_id,
                 _phantom: PhantomData,
             };
 
-            return Either::left(CsrfTokenValidator::CsrfResponse {
-                csrf_response: resp,
-            });
+            return Either::left(CsrfTokenValidator::CsrfResponse { response: resp });
         }
 
         // Otherwise, process mutating request with token
@@ -361,16 +359,21 @@ where
                 // verifies csrf tokens manually in their handlers.
                 let resp = CsrfResponse {
                     fut: self.service.call(req),
-                    config: None,
+                    config: Some(self.config.clone()),
                     set_token: None,
+                    set_pre_session: None,
                     _phantom: PhantomData,
                 };
 
-                return Either::left(CsrfTokenValidator::CsrfResponse {
-                    csrf_response: resp,
-                });
+                return Either::left(CsrfTokenValidator::CsrfResponse { response: resp });
             }
         }
+
+        let session_id = if let Some((session_id, _)) = cookie_session {
+            Some(session_id)
+        } else {
+            None
+        };
 
         // Try to extract csrf token from header
         let header_token = req
@@ -411,7 +414,7 @@ pin_project! {
     {
         CsrfResponse {
             #[pin]
-            csrf_response: CsrfResponse<S, B>,
+            response: CsrfResponse<S, B>,
         },
         MutatingRequest {
             service: Rc<S>,
@@ -440,7 +443,7 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.as_mut().project() {
-            CsrfTokenValidatorProj::CsrfResponse { csrf_response } => csrf_response.poll(cx),
+            CsrfTokenValidatorProj::CsrfResponse { response } => response.poll(cx),
             CsrfTokenValidatorProj::MutatingRequest {
                 service,
                 config,
@@ -512,12 +515,11 @@ where
                         fut: service.call(req),
                         config: Some(config.clone()),
                         set_token: Some(new_token.into_bytes()),
+                        set_pre_session: None,
                         _phantom: PhantomData,
                     };
 
-                    self.set(CsrfTokenValidator::CsrfResponse {
-                        csrf_response: resp,
-                    });
+                    self.set(CsrfTokenValidator::CsrfResponse { response: resp });
 
                     cx.waker().wake_by_ref(); // wake for the next pool
                     Poll::Pending
@@ -636,6 +638,7 @@ pin_project! {
         fut: S::Future,
         config: Option<Rc<CsrfMiddlewareConfig>>,
         set_token: Option<Vec<u8>>,
+        set_pre_session: Option<Vec<u8>>,
         _phantom: PhantomData<B>,
     }
 }
@@ -664,6 +667,44 @@ where
                             .map_into_right_body()));
                     }
                 };
+
+                // Set pre-session if requested
+                if let Some(pre_session_bytes) = this.set_pre_session {
+                    let cookie_config = match &config.token_cookie_config {
+                        Some(config) => config,
+                        None => {
+                            let res = HttpResponse::InternalServerError()
+                                .body("Token cookie isn't configured for setting pre-session");
+
+                            error!("unable to extract cookie config from csrf middleware config");
+                            return Poll::Ready(Ok(resp
+                                .into_response(res)
+                                .map_into_boxed_body()
+                                .map_into_right_body()));
+                        }
+                    };
+
+                    let pre_session_id = std::str::from_utf8(pre_session_bytes)?;
+                    match resp.response_mut().add_cookie(
+                        &Cookie::build(CSRF_PRE_SESSION_KEY, pre_session_id)
+                            .http_only(cookie_config.http_only)
+                            .secure(cookie_config.secure)
+                            .same_site(cookie_config.same_site)
+                            .finish(),
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let res = HttpResponse::InternalServerError()
+                                .body("Unable to set pre-session cookie");
+
+                            error!("unable to set pre-session cookie in csrf response: {:?}", e);
+                            return Poll::Ready(Ok(resp
+                                .into_response(res)
+                                .map_into_boxed_body()
+                                .map_into_right_body()));
+                        }
+                    }
+                }
 
                 // Based on configured pattern, set a new token or rotate
                 // the old one for the service response if pattern is passed.
