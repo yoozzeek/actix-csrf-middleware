@@ -1,13 +1,25 @@
 # actix-csrf-middleware
 
 CSRF protection middleware for [Actix Web](https://github.com/actix/actix-web) applications. Supports double submit
-cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to
-configure, and includes test coverage for common attacks and edge cases.
+cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to configure, and includes
+test coverage for common attacks and edge cases.
 
-- Double submit cookie or actix session token storage
-- Handles JSON and form submissions
-- Configurable cookie, header name, form field, and error handler
-- Per-path CSRF exclusion (skip_for)
+- Store CSRF tokens as:
+    - **Stateless double submit cookie**
+    - Synchronizer token in persistent storage via `actix-session`
+- Implemented following
+  the [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
+    - CSRF token is a 256-bit cryptographically secure random value
+    - For the double submit cookie pattern, hashes the session/pre-session ID with the CSRF token using HMAC-SHA256
+- Protect unauthorized routes with signed, stateless pre-sessions
+- Automatically extract and verify tokens from:
+    - `application/json`
+    - `application/x-www-form-urlencoded`
+- Configurable cookie, header, and form field names
+- Helpers for manually extracting and validating CSRF tokens at the handler level—useful for protecting
+  `multipart/form-data` requests with binary files without reading the body in middleware
+- Enabled by default for all requests; supports per-path CSRF exclusion via `skip_for`
+- Custom error handler (coming soon)
 
 ## Examples
 
@@ -41,13 +53,14 @@ fn main() -> std::io::Result<()> {
     let csrf_config = CsrfMiddlewareConfig::double_submit_cookie();
     HttpServer::new(|| {
         App::new()
+            // Wraps all routes and enabled protection
             .wrap(CsrfMiddleware::new(csrf_config))
+            // Inject CSRF token to your form
             .route("/form", web::get().to(|csrf: CsrfToken| async move {
-                // Inject CSRF token to your form
                 HttpResponse::Ok().body(format!("token:{}", csrf.0))
             }))
+            // Only called if CSRF token is valid
             .route("/submit", web::post().to(|| async move {
-                // Only called if CSRF is valid
                 HttpResponse::Ok().body("OK")
             }))
     })
@@ -58,8 +71,8 @@ fn main() -> std::io::Result<()> {
 
 ### Synchronizer Token
 
-To enable the synchronizer token pattern activate session feature and wrap with `actix-session` middleware
-(see [actix-session](https://docs.rs/actix-session)).
+To enable the synchronizer token pattern activate session feature and wrap with `actix-session` middleware (
+see [actix-session](https://docs.rs/actix-session)).
 
 Dependencies:
 
@@ -90,27 +103,22 @@ fn main() -> std::io::Result<()> {
 
 ### Custom Configuration
 
-```rust
-use actix_csrf_middleware::{CsrfMiddlewareConfig};
+You can create custom configuration defining `CsrfMiddlewareConfig` struct. In case of using
+default configuration builders `CsrfMiddlewareConfig::synchronizer_token` or
+`CsrfMiddlewareConfig::double_submit_cookie` you can configure middleware with
+special methods such as `with_skip_for`, `with_multipart`, `with_on_error`, etc.
 
-fn build_custom_config() {
-    CsrfMiddlewareConfig {
-        pattern: CsrfPattern::SynchronizerToken,
-        session_id_cookie_name: "session-id".to_string(),
-        token_cookie_name: "csrf-token".to_string(),
-        token_form_field: "csrf_token".to_string(),
-        token_header_name: "X-CSRF-Token".to_string(),
-        token_cookie_config: Some(CsrfDoubleSubmitCookie {
-            http_only: true,
-            secure: true,
-            same_site: SameSite::Lax,
-        }),
-        secret_key: Some(b"seper-secret-key".to_vec()),
-        skip_for: vec!["/api/".to_string()], // Skip CSRF checks for certain paths
-        on_error: Rc::new(|_| HttpResponse::Forbidden().body("Invalid CSRF token")),
-    }
-}
-```
+#### CsrfMiddlewareConfig
+
+* `pattern`: configure which pattern to use to store CSRF tokens
+* `session_id_cookie_name`:
+* `token_cookie_name`:
+* `token_form_field`:
+* `token_header_name`:
+* `token_cookie_config`:
+* `secret_key`:
+* `skip_for`:
+* `on_error`:
 
 ## Security
 
