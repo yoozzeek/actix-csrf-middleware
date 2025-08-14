@@ -1,5 +1,4 @@
 use actix_http::{header::HeaderMap, StatusCode};
-use actix_session::storage::CookieSessionStore;
 #[cfg(feature = "actix-session")]
 use actix_session::SessionExt;
 use actix_utils::future::Either;
@@ -23,7 +22,6 @@ use log::{error, warn};
 use pin_project_lite::pin_project;
 use rand::RngCore;
 use sha2::Sha256;
-use std::ops::Deref;
 use std::{
     collections::HashMap,
     future::Future,
@@ -439,7 +437,8 @@ where
                     _phantom: *_phantom,
                 };
 
-                resp.poll(cx)
+                let mut pinned = std::pin::pin!(resp);
+                pinned.as_mut().poll(cx)
             }
             CsrfTokenValidatorProj::ReadOnlyRequest {
                 fut,
@@ -454,7 +453,8 @@ where
                     _phantom: PhantomData,
                 };
 
-                resp.poll(cx)
+                let mut pinned = std::pin::pin!(resp);
+                pinned.as_mut().poll(cx)
             }
             CsrfTokenValidatorProj::MutatingRequest {
                 service,
@@ -520,7 +520,14 @@ where
                         _phantom: PhantomData,
                     };
 
-                    resp.poll(cx)
+                    let mut pinned = std::pin::pin!(resp);
+                    pinned.as_mut().poll(cx)
+                } else {
+                    error!("request already taken in csrf validator's state machine");
+
+                    Poll::Ready(Err(actix_web::error::ErrorInternalServerError(
+                        "Request was already taken",
+                    )))
                 }
             }
             CsrfTokenValidatorProj::ReadingBody {
@@ -568,7 +575,7 @@ where
                         true_token,
                         client_token,
                         session_id: *session_id,
-                        req,
+                        req: Some(request),
                     });
 
                     cx.waker().wake_by_ref(); // wake for the next pool
