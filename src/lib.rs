@@ -205,35 +205,39 @@ impl<S> CsrfMiddlewareService<S> {
     }
 
     fn get_true_token(&self, req: &ServiceRequest, session_id: Option<&str>) -> (String, bool) {
-        // If corresponding feature enabled then get token from persistent session storage
-        if cfg!(feature = "actix-session") {
-            let session = req.get_session();
-            let found = session
-                .get::<String>(&self.config.token_cookie_name)
-                .ok()
-                .flatten();
+        match self.config.pattern {
+            // If corresponding feature enabled then get token from persistent session storage
+            #[cfg(feature = "actix-session")]
+            CsrfPattern::SynchronizerToken => {
+                let session = req.get_session();
+                let found = session
+                    .get::<String>(&self.config.token_cookie_name)
+                    .ok()
+                    .flatten();
 
-            return match found {
-                Some(tok) => (tok, false),
-                None => (generate_random_token(), true),
-            };
-        }
+                match found {
+                    Some(tok) => (tok, false),
+                    None => (generate_random_token(), true),
+                }
+            }
+            // Check for csrf token in request cookies
+            CsrfPattern::DoubleSubmitCookie => {
+                let token = {
+                    req.cookie(&self.config.token_cookie_name)
+                        .map(|c| c.value().to_string())
+                };
 
-        // Otherwise, check for token in request cookies
-        let token = {
-            req.cookie(&self.config.token_cookie_name)
-                .map(|c| c.value().to_string())
-        };
-
-        match token {
-            Some(tok) => (tok, false),
-            None => {
-                let secret = self.config.secret_key.as_ref();
-                let tok = generate_hmac_token(
-                    session_id.expect("Session or pre-session id is passed"),
-                    secret,
-                );
-                (tok.clone(), true)
+                match token {
+                    Some(tok) => (tok, false),
+                    None => {
+                        let secret = self.config.secret_key.as_ref();
+                        let tok = generate_hmac_token(
+                            session_id.expect("Session or pre-session id is passed"),
+                            secret,
+                        );
+                        (tok, true)
+                    }
+                }
             }
         }
     }
@@ -260,9 +264,14 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         if self.should_skip_validation(&req) {
-            return Either::left(CsrfTokenValidator::SkippingValidation {
+            let resp = CsrfResponse {
                 fut: self.service.call(req),
+                config: None,
+                set_token: None,
                 _phantom: PhantomData,
+            };
+            return Either::left(CsrfTokenValidator::CsrfResponse {
+                csrf_response: resp,
             });
         }
 
@@ -297,7 +306,7 @@ where
             if !should_set_session {
                 None
             } else {
-                Some(session_id.as_str())
+                Some(session_id)
             }
         } else {
             None
@@ -307,16 +316,20 @@ where
         // added to the response when should_set_token flag is set to true.
         if !is_mutating {
             let token = if should_set_token {
-                Some(true_token.as_bytes())
+                Some(true_token.into_bytes())
             } else {
                 None
             };
 
-            return Either::left(CsrfTokenValidator::ReadOnlyRequest {
+            let resp = CsrfResponse {
                 fut: self.service.call(req),
-                config: self.config.clone(),
+                config: Some(self.config.clone()),
                 set_token: token,
-                set_session_id: session_id,
+                _phantom: PhantomData,
+            };
+
+            return Either::left(CsrfTokenValidator::CsrfResponse {
+                csrf_response: resp,
             });
         }
 
@@ -346,9 +359,15 @@ where
 
                 // Otherwise, consumer reads body, extracts and
                 // verifies csrf tokens manually in their handlers.
-                return Either::left(CsrfTokenValidator::SkippingValidation {
+                let resp = CsrfResponse {
                     fut: self.service.call(req),
+                    config: None,
+                    set_token: None,
                     _phantom: PhantomData,
+                };
+
+                return Either::left(CsrfTokenValidator::CsrfResponse {
+                    csrf_response: resp,
                 });
             }
         }
@@ -361,12 +380,12 @@ where
             .map(|s| s.to_string());
 
         // Fastest and easiest way when token just received in headers
-        if header_token.is_some() {
+        if let Some(token) = header_token {
             return Either::left(CsrfTokenValidator::MutatingRequest {
                 service: self.service.clone(),
                 config: self.config.clone(),
-                true_token: true_token.as_bytes(),
-                client_token: header_token.unwrap().as_bytes(),
+                true_token: true_token.into_bytes(), // TODO Find a way avoid such allocations
+                client_token: token.into_bytes(),
                 session_id,
                 req: Some(req),
             });
@@ -377,7 +396,7 @@ where
             req: Some(req),
             config: self.config.clone(),
             service: self.service.clone(),
-            true_token: true_token.as_bytes(),
+            true_token: true_token.into_bytes(),
             session_id,
         })
     }
@@ -385,42 +404,34 @@ where
 
 pin_project! {
     #[project = CsrfTokenValidatorProj]
-    pub enum CsrfTokenValidator<'a, S, B>
+    pub enum CsrfTokenValidator<S, B>
     where
         S: Service<ServiceRequest>,
         B: MessageBody,
     {
+        CsrfResponse {
+            #[pin]
+            csrf_response: CsrfResponse<S, B>,
+        },
         MutatingRequest {
             service: Rc<S>,
             config: Rc<CsrfMiddlewareConfig>,
-            true_token: &'a [u8],
-            client_token: &'a [u8],
-            session_id: Option<&'a str>,
+            true_token: Vec<u8>,
+            client_token: Vec<u8>,
+            session_id: Option<String>,
             req: Option<ServiceRequest>
-        },
-        ReadOnlyRequest {
-            #[pin]
-            fut: S::Future,
-            config: Rc<CsrfMiddlewareConfig>,
-            set_token: Option<&'a [u8]>,
-            set_session_id: Option<&'a str>,
-        },
-        SkippingValidation {
-            #[pin]
-            fut: S::Future,
-            _phantom: PhantomData<B>,
         },
         ReadingBody {
             service: Rc<S>,
             config: Rc<CsrfMiddlewareConfig>,
             req: Option<ServiceRequest>,
-            true_token: &'a [u8],
-            session_id: Option<&'a str>,
+            true_token: Vec<u8>,
+            session_id: Option<String>,
         },
     }
 }
 
-impl<S, B> Future for CsrfTokenValidator<'_, S, B>
+impl<S, B> Future for CsrfTokenValidator<S, B>
 where
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
     B: MessageBody,
@@ -429,33 +440,7 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.as_mut().project() {
-            CsrfTokenValidatorProj::SkippingValidation { fut, _phantom } => {
-                let resp = CsrfResponse {
-                    fut,
-                    config: None,
-                    set_token: None,
-                    _phantom: *_phantom,
-                };
-
-                let mut pinned = std::pin::pin!(resp);
-                pinned.as_mut().poll(cx)
-            }
-            CsrfTokenValidatorProj::ReadOnlyRequest {
-                fut,
-                config,
-                set_token,
-                set_session_id,
-            } => {
-                let resp = CsrfResponse {
-                    fut,
-                    config: Some(config.clone()),
-                    set_token: *set_token,
-                    _phantom: PhantomData,
-                };
-
-                let mut pinned = std::pin::pin!(resp);
-                pinned.as_mut().poll(cx)
-            }
+            CsrfTokenValidatorProj::CsrfResponse { csrf_response } => csrf_response.poll(cx),
             CsrfTokenValidatorProj::MutatingRequest {
                 service,
                 config,
@@ -466,17 +451,23 @@ where
             } => {
                 if let Some(req) = req.take() {
                     // Session id cannot be empty with DoubleSubmitCookie pattern
-                    if cfg!(feature = "actix-session") && session_id.is_none() {
-                        let resp = HttpResponse::with_body(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Session id is empty in csrf token validator".to_string(),
-                        );
+                    let session_id = if config.pattern == CsrfPattern::DoubleSubmitCookie {
+                        if let Some(id) = session_id.take() {
+                            Some(id)
+                        } else {
+                            let resp = HttpResponse::with_body(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Session id is empty in csrf token validator".to_string(),
+                            );
 
-                        return Poll::Ready(Ok(req
-                            .into_response(resp)
-                            .map_into_boxed_body()
-                            .map_into_right_body()));
-                    }
+                            return Poll::Ready(Ok(req
+                                .into_response(resp)
+                                .map_into_boxed_body()
+                                .map_into_right_body()));
+                        }
+                    } else {
+                        None
+                    };
 
                     // Validate client token based on the pattern
                     let valid = match &config.pattern {
@@ -484,11 +475,13 @@ where
                         CsrfPattern::SynchronizerToken => eq_tokens(true_token, client_token),
                         CsrfPattern::DoubleSubmitCookie => {
                             validate_hmac_token(
-                                session_id.expect("session id cannot be empty is hmac validation"),
+                                session_id
+                                    .as_deref()
+                                    .expect("session id cannot be empty is hmac validation"),
                                 client_token,
-                                b"",
+                                config.secret_key.as_ref(),
                             )
-                            .unwrap_or_else(|err| {
+                            .unwrap_or({
                                 // TODO Handle validation errors
                                 false
                             })
@@ -503,12 +496,14 @@ where
                             .map_into_right_body()));
                     }
 
-                    // Generate new token based on configured pattern
+                    // Rotate token based on configured pattern after every successful validation
                     let new_token = match &config.pattern {
                         #[cfg(feature = "actix-session")]
                         CsrfPattern::SynchronizerToken => generate_random_token(),
                         CsrfPattern::DoubleSubmitCookie => generate_hmac_token(
-                            session_id.expect("session id cannot be empty is hmac validation"),
+                            session_id
+                                .as_deref()
+                                .expect("session id cannot be empty is hmac validation"),
                             config.secret_key.as_ref(),
                         ),
                     };
@@ -516,12 +511,16 @@ where
                     let resp = CsrfResponse {
                         fut: service.call(req),
                         config: Some(config.clone()),
-                        set_token: Some(new_token.as_bytes()),
+                        set_token: Some(new_token.into_bytes()),
                         _phantom: PhantomData,
                     };
 
-                    let mut pinned = std::pin::pin!(resp);
-                    pinned.as_mut().poll(cx)
+                    self.set(CsrfTokenValidator::CsrfResponse {
+                        csrf_response: resp,
+                    });
+
+                    cx.waker().wake_by_ref(); // wake for the next pool
+                    Poll::Pending
                 } else {
                     error!("request already taken in csrf validator's state machine");
 
@@ -556,7 +555,7 @@ where
                         &body_bytes,
                         &config.token_form_field,
                     ) {
-                        Some(token) => token.as_bytes(),
+                        Some(token) => token.into_bytes(),
                         None => {
                             let res = HttpResponse::BadRequest().body("CSRF token is required");
                             return Poll::Ready(Ok(request
@@ -569,14 +568,24 @@ where
                     // Restore the body for the next handler
                     request.set_payload(actix_web::dev::Payload::from(body_bytes.freeze()));
 
-                    self.set(CsrfTokenValidator::MutatingRequest {
-                        service: service.clone(),
-                        config: config.clone(),
-                        true_token,
-                        client_token,
-                        session_id: *session_id,
-                        req: Some(request),
-                    });
+                    let next_state = {
+                        let service = service.clone();
+                        let config = config.clone();
+                        let true_token = std::mem::take(true_token);
+                        let session_id = session_id.take();
+                        let req = Some(request);
+                        CsrfTokenValidator::MutatingRequest {
+                            service,
+                            config,
+                            true_token,
+                            client_token,
+                            session_id,
+                            req,
+                        }
+                    };
+
+                    // Drop borrows from projection before mutating self
+                    self.set(next_state);
 
                     cx.waker().wake_by_ref(); // wake for the next pool
                     Poll::Pending
@@ -618,7 +627,7 @@ fn sync_read_token_from_body(
 }
 
 pin_project! {
-    pub struct CsrfResponse<'a, S, B>
+    pub struct CsrfResponse<S, B>
     where
         S: Service<ServiceRequest>,
         B: MessageBody,
@@ -626,12 +635,12 @@ pin_project! {
         #[pin]
         fut: S::Future,
         config: Option<Rc<CsrfMiddlewareConfig>>,
-        set_token: Option<&'a [u8]>,
+        set_token: Option<Vec<u8>>,
         _phantom: PhantomData<B>,
     }
 }
 
-impl<S, B> Future for CsrfResponse<'_, S, B>
+impl<S, B> Future for CsrfResponse<S, B>
 where
     B: MessageBody,
     S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
@@ -658,8 +667,27 @@ where
 
                 // Based on configured pattern, set a new token or rotate
                 // the old one for the service response if pattern is passed.
-                if let Some(token_bytes) = *this.set_token {
-                    let new_token = str::from_utf8(token_bytes)?;
+                if let Some(token_bytes) = this.set_token.take() {
+                    let new_token = match String::from_utf8(token_bytes) {
+                        Ok(token) => token,
+                        Err(e) => {
+                            let res = HttpResponse::with_body(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "Failed to convert bytes into string in csrf response".to_string(),
+                            );
+
+                            error!(
+                                "unable to convert token bytes into string in csrf response: {:?}",
+                                e
+                            );
+
+                            return Poll::Ready(Ok(resp
+                                .into_response(res)
+                                .map_into_boxed_body()
+                                .map_into_right_body()));
+                        }
+                    };
+
                     match config.pattern {
                         #[cfg(feature = "actix-session")]
                         CsrfPattern::SynchronizerToken => {
@@ -676,10 +704,7 @@ where
                                         "Failed to insert CSRF token into session".to_string(),
                                     );
 
-                                    error!(
-                                            "unable to set a csrf token with actix session in csrf response: {:?}",
-                                            e
-                                        );
+                                    error!("unable to set a csrf token with actix session in csrf response: {:?}",e);
                                     return Poll::Ready(Ok(resp
                                         .into_response(res)
                                         .map_into_boxed_body()
@@ -778,7 +803,7 @@ pub fn generate_hmac_token(session_id: &str, secret: &[u8]) -> String {
 }
 
 pub fn validate_hmac_token(session_id: &str, token: &[u8], secret: &[u8]) -> Result<bool, Error> {
-    let token_str = str::from_utf8(token)?;
+    let token_str = std::str::from_utf8(token)?;
     let parts: Vec<&str> = token_str.split('.').collect();
     if parts.len() != 2 {
         return Ok(false);
