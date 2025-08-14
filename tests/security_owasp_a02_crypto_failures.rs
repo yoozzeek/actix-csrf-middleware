@@ -1,7 +1,7 @@
 mod common;
 
 use actix_csrf_middleware::{
-    CsrfMiddlewareConfig, DEFAULT_HEADER, generate_hmac_token, validate_hmac_token,
+    generate_hmac_token, validate_hmac_token, CsrfMiddlewareConfig, DEFAULT_CSRF_TOKEN_HEADER,
 };
 use actix_web::{http::StatusCode, test};
 use common::*;
@@ -18,7 +18,7 @@ async fn test_weak_secret_key_detection() {
     // The middleware should still work but this highlights the need for strong keys
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, _token))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, _token))
         .cookie(token_cookie)
         .cookie(session_cookie)
         .to_request();
@@ -66,7 +66,7 @@ async fn test_hmac_timing_attack_resistance() {
     ];
 
     for invalid_token in invalid_tokens {
-        let result = validate_hmac_token(session_id, invalid_token, &secret_key);
+        let result = validate_hmac_token(session_id, invalid_token.as_bytes(), &secret_key);
         match result {
             Ok(is_valid) => assert!(!is_valid, "Invalid token should not validate"),
             Err(_) => {} // Expected for malformed tokens
@@ -90,7 +90,7 @@ async fn test_key_reuse_vulnerability() {
     );
 
     // Cross-validation should fail
-    let cross_validation = validate_hmac_token("app1_session", &token2, &shared_secret);
+    let cross_validation = validate_hmac_token("app1_session", token2.as_bytes(), &shared_secret);
     assert!(
         !cross_validation.unwrap_or(true),
         "Cross-session validation should fail"
@@ -131,7 +131,7 @@ async fn test_empty_secret_key_handling() {
 
     // Should handle empty key gracefully
     let token = generate_hmac_token(session_id, empty_key);
-    let validation = validate_hmac_token(session_id, &token, empty_key);
+    let validation = validate_hmac_token(session_id, token.as_bytes(), empty_key);
 
     // Should still work but is cryptographically weak
     assert!(
@@ -159,7 +159,7 @@ async fn test_malformed_token_injection() {
     for malformed_token in malformed_tokens {
         let req = test::TestRequest::post()
             .uri("/submit")
-            .insert_header((DEFAULT_HEADER, malformed_token))
+            .insert_header((DEFAULT_CSRF_TOKEN_HEADER, malformed_token))
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
@@ -189,27 +189,27 @@ pub async fn token_cookie<S>(
 )
 where
     S: actix_web::dev::Service<
-            actix_http::Request,
-            Response = actix_web::dev::ServiceResponse<
-                actix_http::body::EitherBody<actix_http::body::BoxBody>,
-            >,
-            Error = actix_web::Error,
+        actix_http::Request,
+        Response = actix_web::dev::ServiceResponse<
+            actix_http::body::EitherBody<actix_http::body::BoxBody>,
         >,
+        Error = actix_web::Error,
+    >,
 {
     use actix_csrf_middleware::{
-        DEFAULT_COOKIE_NAME, DEFAULT_SESSION_ID_COOKIE_NAME, PRE_SESSION_COOKIE_NAME,
+        CSRF_PRE_SESSION_KEY, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY,
     };
 
     let req = test::TestRequest::get().uri("/form").to_request();
     let resp = test::call_service(&app, req).await;
 
-    let session_id_cookie_name = session_id_cookie_name.unwrap_or(DEFAULT_SESSION_ID_COOKIE_NAME);
-    let token_cookie_name = token_cookie_name.unwrap_or(DEFAULT_COOKIE_NAME);
+    let session_id_cookie_name = session_id_cookie_name.unwrap_or(DEFAULT_SESSION_ID_KEY);
+    let token_cookie_name = token_cookie_name.unwrap_or(DEFAULT_CSRF_TOKEN_KEY);
 
     let session_id_cookie = resp
         .response()
         .cookies()
-        .find(|c| c.name() == session_id_cookie_name || c.name() == PRE_SESSION_COOKIE_NAME)
+        .find(|c| c.name() == session_id_cookie_name || c.name() == CSRF_PRE_SESSION_KEY)
         .map(|c| c.into_owned())
         .unwrap();
 

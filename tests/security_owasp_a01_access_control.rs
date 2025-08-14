@@ -1,6 +1,6 @@
 mod common;
 
-use actix_csrf_middleware::{CsrfMiddlewareConfig, DEFAULT_HEADER};
+use actix_csrf_middleware::{CsrfMiddlewareConfig, DEFAULT_CSRF_TOKEN_HEADER};
 use actix_web::test;
 use common::*;
 
@@ -49,7 +49,7 @@ async fn test_token_privilege_escalation_attempt() {
     // Try to use token1 with session2 (cross-session attack)
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token1))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token1))
         .cookie(cookie2) // Wrong cookie
         .cookie(session2) // Wrong session
         .to_request();
@@ -62,7 +62,7 @@ async fn test_token_privilege_escalation_attempt() {
 /// Test bypass attempts through HTTP method override - Synchronizer Token
 #[actix_web::test]
 async fn test_method_override_bypass_attempt_synchronizer() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (_token, session_cookie) = token_cookie_sync(&app, None).await;
 
     // Attempt to bypass CSRF using X-HTTP-Method-Override on a GET route
@@ -81,7 +81,7 @@ async fn test_method_override_bypass_attempt_synchronizer() {
 /// Test unauthorized access to CSRF token generation endpoints - Synchronizer Token
 #[actix_web::test]
 async fn test_csrf_token_endpoint_access_control_synchronizer() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
 
     // Multiple rapid requests to token endpoint to check for rate limiting
     for _ in 0..50 {
@@ -95,7 +95,7 @@ async fn test_csrf_token_endpoint_access_control_synchronizer() {
 /// Test privilege escalation through CSRF token manipulation - Synchronizer Token
 #[actix_web::test]
 async fn test_token_privilege_escalation_attempt_synchronizer() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
 
     // Get token for one session
     let (token1, _session1) = token_cookie_sync(&app, None).await;
@@ -104,7 +104,7 @@ async fn test_token_privilege_escalation_attempt_synchronizer() {
     // Try to use token1 with session2 (cross-session attack)
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token1))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token1))
         .cookie(session2) // Wrong session
         .to_request();
 
@@ -130,12 +130,12 @@ where
             Error = actix_web::Error,
         >,
 {
-    use actix_csrf_middleware::DEFAULT_SESSION_ID_COOKIE_NAME;
+    use actix_csrf_middleware::DEFAULT_SESSION_ID_KEY;
 
     let req = test::TestRequest::get().uri("/form").to_request();
     let resp = test::call_service(&app, req).await;
 
-    let session_id_cookie_name = session_id_cookie_name.unwrap_or(DEFAULT_SESSION_ID_COOKIE_NAME);
+    let session_id_cookie_name = session_id_cookie_name.unwrap_or(DEFAULT_SESSION_ID_KEY);
 
     let session_id_cookie = resp
         .response()
@@ -170,19 +170,19 @@ where
         >,
 {
     use actix_csrf_middleware::{
-        DEFAULT_COOKIE_NAME, DEFAULT_SESSION_ID_COOKIE_NAME, PRE_SESSION_COOKIE_NAME,
+        CSRF_PRE_SESSION_KEY, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY,
     };
 
     let req = test::TestRequest::get().uri("/form").to_request();
     let resp = test::call_service(&app, req).await;
 
-    let session_id_cookie_name = session_id_cookie_name.unwrap_or(DEFAULT_SESSION_ID_COOKIE_NAME);
-    let token_cookie_name = token_cookie_name.unwrap_or(DEFAULT_COOKIE_NAME);
+    let session_id_cookie_name = session_id_cookie_name.unwrap_or(DEFAULT_SESSION_ID_KEY);
+    let token_cookie_name = token_cookie_name.unwrap_or(DEFAULT_CSRF_TOKEN_KEY);
 
     let session_id_cookie = resp
         .response()
         .cookies()
-        .find(|c| c.name() == session_id_cookie_name || c.name() == PRE_SESSION_COOKIE_NAME)
+        .find(|c| c.name() == session_id_cookie_name || c.name() == CSRF_PRE_SESSION_KEY)
         .map(|c| c.into_owned())
         .unwrap();
 
