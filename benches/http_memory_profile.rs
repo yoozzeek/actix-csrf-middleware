@@ -1,5 +1,5 @@
 use actix_csrf_middleware::{
-    CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_CSRF_TOKEN_FIELD,
+    CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken, DEFAULT_CSRF_TOKEN_KEY,
     DEFAULT_CSRF_TOKEN_HEADER, CSRF_PRE_SESSION_KEY,
 };
 #[cfg(feature = "session")]
@@ -144,7 +144,7 @@ async fn main() {
         let start_time = Instant::now();
         let (start_allocated, start_net) = get_memory_usage();
 
-        let config = CsrfMiddlewareConfig::synchronizer_token().with_multipart(true);
+        let config = CsrfMiddlewareConfig::synchronizer_token(secret_key).with_multipart(true);
 
         let session_middleware =
             SessionMiddleware::builder(CookieSessionStore::default(), Key::generate())
