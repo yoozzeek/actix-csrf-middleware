@@ -15,10 +15,10 @@ fn bench_validate_hmac_tokens(c: &mut Criterion) {
     let token1 = generate_hmac_token(&sess1_id, &get_secret_key());
     let _token2 = generate_hmac_token(&sess2_id, &get_secret_key());
     c.bench_function("hmac_tokens_valid", |b| {
-        b.iter(|| validate_hmac_token(&sess1_id, &token1, &get_secret_key()))
+        b.iter(|| validate_hmac_token(&sess1_id, token1.as_bytes(), &get_secret_key()))
     });
     c.bench_function("hmac_tokens_invalid", |b| {
-        b.iter(|| validate_hmac_token(&sess2_id, &token1, &get_secret_key()))
+        b.iter(|| validate_hmac_token(&sess2_id, token1.as_bytes(), &get_secret_key()))
     });
 }
 

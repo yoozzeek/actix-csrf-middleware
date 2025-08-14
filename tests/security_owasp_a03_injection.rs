@@ -1,6 +1,6 @@
 mod common;
 
-use actix_csrf_middleware::{CsrfMiddlewareConfig, DEFAULT_FORM_FIELD, DEFAULT_HEADER};
+use actix_csrf_middleware::{CsrfMiddlewareConfig, DEFAULT_CSRF_TOKEN_FIELD, DEFAULT_CSRF_TOKEN_HEADER};
 use actix_web::{http::StatusCode, http::header::ContentType, test};
 use common::*;
 use serde_json::json;
@@ -22,7 +22,7 @@ async fn test_sql_injection_in_csrf_token() {
     for payload in sql_injection_payloads {
         let req = test::TestRequest::post()
             .uri("/submit")
-            .insert_header((DEFAULT_HEADER, payload))
+            .insert_header((DEFAULT_CSRF_TOKEN_HEADER, payload))
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
@@ -55,7 +55,7 @@ async fn test_xss_injection_in_csrf_forms() {
         // Test in header
         let req = test::TestRequest::post()
             .uri("/submit")
-            .insert_header((DEFAULT_HEADER, payload))
+            .insert_header((DEFAULT_CSRF_TOKEN_HEADER, payload))
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
@@ -69,7 +69,7 @@ async fn test_xss_injection_in_csrf_forms() {
         );
 
         // Test in form data
-        let form_data = format!("{}={}", DEFAULT_FORM_FIELD, payload);
+        let form_data = format!("{}={}", DEFAULT_CSRF_TOKEN_FIELD, payload);
         let req = test::TestRequest::post()
             .uri("/submit")
             .insert_header(ContentType::form_url_encoded())
@@ -106,7 +106,7 @@ async fn test_command_injection_in_csrf_token() {
     for payload in command_injection_payloads {
         let req = test::TestRequest::post()
             .uri("/submit")
-            .insert_header((DEFAULT_HEADER, payload))
+            .insert_header((DEFAULT_CSRF_TOKEN_HEADER, payload))
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
@@ -177,7 +177,7 @@ async fn test_ldap_injection_in_csrf_token() {
     for payload in ldap_injection_payloads {
         let req = test::TestRequest::post()
             .uri("/submit")
-            .insert_header((DEFAULT_HEADER, payload))
+            .insert_header((DEFAULT_CSRF_TOKEN_HEADER, payload))
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
@@ -209,7 +209,7 @@ async fn test_path_traversal_injection() {
     for payload in path_traversal_payloads {
         let req = test::TestRequest::post()
             .uri("/submit")
-            .insert_header((DEFAULT_HEADER, payload))
+            .insert_header((DEFAULT_CSRF_TOKEN_HEADER, payload))
             .cookie(token_cookie.clone())
             .cookie(session_cookie.clone())
             .to_request();
@@ -239,7 +239,7 @@ async fn test_null_byte_injection() {
 
     for payload in null_byte_payloads {
         // Test in form data instead of headers (headers can't contain null bytes)
-        let form_data = format!("{}={}", DEFAULT_FORM_FIELD, payload);
+        let form_data = format!("{}={}", DEFAULT_CSRF_TOKEN_FIELD, payload);
         let req = test::TestRequest::post()
             .uri("/submit")
             .insert_header(ContentType::form_url_encoded())
@@ -274,7 +274,7 @@ async fn test_header_injection_csrf() {
 
     for payload in header_injection_payloads {
         // Test in form data instead of headers (headers can't contain \r\n)
-        let form_data = format!("{}={}", DEFAULT_FORM_FIELD, payload);
+        let form_data = format!("{}={}", DEFAULT_CSRF_TOKEN_FIELD, payload);
         let req = test::TestRequest::post()
             .uri("/submit")
             .insert_header(ContentType::form_url_encoded())
@@ -315,19 +315,19 @@ where
         >,
 {
     use actix_csrf_middleware::{
-        DEFAULT_COOKIE_NAME, DEFAULT_SESSION_ID_COOKIE_NAME, PRE_SESSION_COOKIE_NAME,
+        CSRF_PRE_SESSION_KEY, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY,
     };
 
     let req = test::TestRequest::get().uri("/form").to_request();
     let resp = test::call_service(&app, req).await;
 
-    let session_id_cookie_name = session_id_cookie_name.unwrap_or(DEFAULT_SESSION_ID_COOKIE_NAME);
-    let token_cookie_name = token_cookie_name.unwrap_or(DEFAULT_COOKIE_NAME);
+    let session_id_cookie_name = session_id_cookie_name.unwrap_or(DEFAULT_SESSION_ID_KEY);
+    let token_cookie_name = token_cookie_name.unwrap_or(DEFAULT_CSRF_TOKEN_KEY);
 
     let session_id_cookie = resp
         .response()
         .cookies()
-        .find(|c| c.name() == session_id_cookie_name || c.name() == PRE_SESSION_COOKIE_NAME)
+        .find(|c| c.name() == session_id_cookie_name || c.name() == CSRF_PRE_SESSION_KEY)
         .map(|c| c.into_owned())
         .unwrap();
 

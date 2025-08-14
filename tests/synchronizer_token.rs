@@ -1,8 +1,8 @@
 mod common;
 
 use actix_csrf_middleware::{
-    CsrfMiddlewareConfig, CsrfPattern, DEFAULT_COOKIE_NAME, DEFAULT_FORM_FIELD, DEFAULT_HEADER,
-    DEFAULT_SESSION_ID_COOKIE_NAME,
+    CsrfMiddlewareConfig, CsrfPattern, DEFAULT_CSRF_TOKEN_FIELD, DEFAULT_CSRF_TOKEN_HEADER,
+    DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY,
 };
 use actix_http::body::{BoxBody, EitherBody};
 use actix_http::{Request, StatusCode};
@@ -11,11 +11,15 @@ use actix_web::cookie::Cookie;
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::http::header::ContentType;
 use actix_web::web::Bytes;
-use actix_web::{HttpResponse, mime, test};
+use actix_web::{mime, test, HttpResponse};
 use common::*;
 use serde_json::json;
 use std::collections::HashSet;
 use std::rc::Rc;
+
+fn get_secret_key() -> Vec<u8> {
+    b"super-secret".to_vec()
+}
 
 pub async fn token_cookie<S>(
     app: &S,
@@ -30,7 +34,7 @@ where
     let cookie_name = if let Some(session_id) = session_id_cookie_name {
         session_id
     } else {
-        DEFAULT_SESSION_ID_COOKIE_NAME
+        DEFAULT_SESSION_ID_KEY
     };
 
     let cookie = resp
@@ -50,7 +54,7 @@ where
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn test_synchronizer_token_behavior() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (initial_token, initial_token_cookie) = token_cookie(&app, None).await;
 
     // Verify no token change on a non-mutating GET
@@ -79,7 +83,7 @@ async fn test_synchronizer_token_behavior() {
     // Verify token change on a mutating POST
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, initial_token.clone()))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, initial_token.clone()))
         .cookie(initial_token_cookie.clone())
         .to_request();
     let resp = test::call_service(&app, req).await;
@@ -96,11 +100,11 @@ async fn test_synchronizer_token_behavior() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn valid_csrf_header() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (token, token_cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token))
         .cookie(token_cookie)
         .to_request();
     let resp = test::call_service(&app, req).await;
@@ -110,7 +114,7 @@ async fn valid_csrf_header() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn valid_csrf_form_field() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (token, token_cookie) = { token_cookie(&app, None).await };
 
     let form = format!("csrf_token={}", &token);
@@ -127,7 +131,7 @@ async fn valid_csrf_form_field() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn valid_csrf_json_payload() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (token, token_cookie) = { token_cookie(&app, None).await };
 
     let req = test::TestRequest::post()
@@ -145,12 +149,12 @@ async fn valid_csrf_json_payload() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn invalid_csrf_header() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (_token, token_cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
         .cookie(token_cookie)
-        .insert_header((DEFAULT_HEADER, "wrong-token"))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, "wrong-token"))
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -159,7 +163,7 @@ async fn invalid_csrf_header() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn invalid_csrf_form_field() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (_token, token_cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -174,7 +178,7 @@ async fn invalid_csrf_form_field() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn invalid_csrf_json_payload() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (_token, token_cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -190,7 +194,7 @@ async fn invalid_csrf_json_payload() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn missing_csrf_token() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (_token, token_cookie) = { token_cookie(&app, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
@@ -204,13 +208,13 @@ async fn missing_csrf_token() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn token_refresh_on_successful_mutation() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (token1, token1_cookie) = { token_cookie(&app, None).await };
 
     // POST with valid token
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token1.clone()))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token1.clone()))
         .cookie(token1_cookie)
         .to_request();
     let resp = test::call_service(&app, req).await;
@@ -224,7 +228,7 @@ async fn token_refresh_on_successful_mutation() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn synchronizer_token_format() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (token, _token_cookie) = token_cookie(&app, None).await;
 
     // Synchronizer token should be a 32-byte base64url encoded string (43 chars without padding)
@@ -252,13 +256,13 @@ async fn synchronizer_token_format() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn csrf_token_rotation() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (initial_token, initial_token_cookie) = token_cookie(&app, None).await;
 
     // Perform a POST request with the initial token
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, initial_token.clone()))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, initial_token.clone()))
         .cookie(initial_token_cookie)
         .to_request();
     let resp = test::call_service(&app, req).await;
@@ -285,12 +289,12 @@ async fn custom_config_header_name() {
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::SynchronizerToken,
         manual_multipart: false,
-        session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
-        token_cookie_name: DEFAULT_COOKIE_NAME.to_string(),
+        session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
+        token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.to_string(),
         token_form_field: "myfield".to_string(),
         token_header_name: HEADER_NAME.to_string(),
         token_cookie_config: None,
-        secret_key: None,
+        secret_key: get_secret_key(),
         skip_for: vec![],
         on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
     };
@@ -314,12 +318,12 @@ async fn custom_config_cookie_name() {
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::SynchronizerToken,
         manual_multipart: false,
-        session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
+        session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
         token_cookie_name: COOKIE_NAME.to_string(),
-        token_form_field: DEFAULT_FORM_FIELD.to_string(),
-        token_header_name: DEFAULT_HEADER.to_string(),
+        token_form_field: DEFAULT_CSRF_TOKEN_FIELD.to_string(),
+        token_header_name: DEFAULT_CSRF_TOKEN_HEADER.to_string(),
         token_cookie_config: None,
-        secret_key: None,
+        secret_key: get_secret_key(),
         skip_for: vec![],
         on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
     };
@@ -328,7 +332,7 @@ async fn custom_config_cookie_name() {
 
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token))
         .cookie(token_cookie)
         .to_request();
     let resp = test::call_service(&app, req).await;
@@ -343,12 +347,12 @@ async fn custom_config_form_field_name() {
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::SynchronizerToken,
         manual_multipart: false,
-        session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
-        token_cookie_name: DEFAULT_COOKIE_NAME.to_string(),
+        session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
+        token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.to_string(),
         token_form_field: FIELD_NAME.to_string(),
         token_header_name: "myheader".to_string(),
         token_cookie_config: None,
-        secret_key: None,
+        secret_key: get_secret_key(),
         skip_for: vec![],
         on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
     };
@@ -369,13 +373,13 @@ async fn custom_config_form_field_name() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn handles_large_chunked_body() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (token, token_cookie) = { token_cookie(&app, None).await };
 
     let large = "a".repeat(1024 * 1024);
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token))
         .insert_header(ContentType::form_url_encoded())
         .cookie(token_cookie)
         .set_payload(large)
@@ -387,9 +391,8 @@ async fn handles_large_chunked_body() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn handles_malformed_json_body() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (_token, token_cookie) = { token_cookie(&app, None).await };
-
     let req = test::TestRequest::post()
         .uri("/submit")
         .insert_header(ContentType::json())
@@ -407,9 +410,8 @@ async fn handles_malformed_json_body() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn multipart_form_data_not_enabled() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
     let (_token, token_cookie) = token_cookie(&app, None).await;
-
     let (body, headers) = create_form_data_payload_and_headers(
         "foo",
         Some("lorem. txt".to_owned()),
@@ -438,9 +440,10 @@ async fn multipart_form_data_not_enabled() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn multipart_form_data_enabled() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token().with_multipart(true)).await;
+    let app =
+        build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key()).with_multipart(true))
+            .await;
     let (token, token_cookie) = token_cookie(&app, None).await;
-
     // Create multipart form data with CSRF token
     let boundary = "----formdata-test-boundary";
     let mut form_data = Vec::new();
@@ -483,7 +486,7 @@ async fn multipart_form_data_enabled() {
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn token_uniqueness() {
-    let app = build_app(CsrfMiddlewareConfig::synchronizer_token()).await;
+    let app = build_app(CsrfMiddlewareConfig::synchronizer_token(&get_secret_key())).await;
 
     const MAX_COUNT: i32 = 100;
     let mut tokens = HashSet::new();

@@ -1,15 +1,13 @@
 use actix_csrf_middleware::{
-    CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken, DEFAULT_COOKIE_NAME, DEFAULT_FORM_FIELD,
-    DEFAULT_HEADER, PRE_SESSION_COOKIE_NAME,
+    CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken, DEFAULT_CSRF_TOKEN_KEY,
+    DEFAULT_CSRF_TOKEN_HEADER, CSRF_PRE_SESSION_KEY,
 };
 #[cfg(feature = "session")]
 use actix_session::{
-    SessionMiddleware, config::CookieContentSecurity, storage::CookieSessionStore,
+    config::CookieContentSecurity, storage::CookieSessionStore, SessionMiddleware,
 };
 use actix_web::cookie::Key;
-use actix_web::http::header::ContentType;
-use actix_web::{App, HttpResponse, HttpRequest, test, web};
-use serde_json::json;
+use actix_web::{test, web, App, HttpRequest, HttpResponse};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -97,13 +95,13 @@ async fn main() {
         let token_cookie = resp
             .response()
             .cookies()
-            .find(|c| c.name() == "csrf-token")
+            .find(|c| c.name() == DEFAULT_CSRF_TOKEN_KEY)
             .map(|c| c.into_owned())
             .unwrap();
         let pre_session_cookie = resp
             .response()
             .cookies()
-            .find(|c| c.name() == "pre-session")
+            .find(|c| c.name() == CSRF_PRE_SESSION_KEY)
             .map(|c| c.into_owned());
         let body = test::read_body(resp).await;
         let token = String::from_utf8(body.to_vec()).unwrap();
@@ -112,7 +110,7 @@ async fn main() {
         // POST request with received token
         let mut req = test::TestRequest::post()
             .uri("/")
-            .insert_header(("X-CSRF-Token", token))
+            .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token))
             .cookie(token_cookie);
         if let Some(pre_session) = pre_session_cookie {
             req = req.cookie(pre_session);
@@ -146,17 +144,15 @@ async fn main() {
         let start_time = Instant::now();
         let (start_allocated, start_net) = get_memory_usage();
 
-        let config = CsrfMiddlewareConfig::synchronizer_token().with_multipart(true);
+        let config = CsrfMiddlewareConfig::synchronizer_token(secret_key).with_multipart(true);
 
-        let session_middleware = SessionMiddleware::builder(
-            CookieSessionStore::default(),
-            Key::generate()
-        )
-        .cookie_content_security(CookieContentSecurity::Private)
-        .cookie_secure(true)
-        .cookie_http_only(true)
-        .cookie_same_site(actix_web::cookie::SameSite::Strict)
-        .build();
+        let session_middleware =
+            SessionMiddleware::builder(CookieSessionStore::default(), Key::generate())
+                .cookie_content_security(CookieContentSecurity::Private)
+                .cookie_secure(true)
+                .cookie_http_only(true)
+                .cookie_same_site(actix_web::cookie::SameSite::Strict)
+                .build();
 
         let app = test::init_service(
             App::new()

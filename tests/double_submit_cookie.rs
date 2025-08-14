@@ -1,8 +1,8 @@
 mod common;
 
 use actix_csrf_middleware::{
-    CsrfDoubleSubmitCookie, CsrfMiddlewareConfig, CsrfPattern, DEFAULT_COOKIE_NAME,
-    DEFAULT_FORM_FIELD, DEFAULT_HEADER, DEFAULT_SESSION_ID_COOKIE_NAME, PRE_SESSION_COOKIE_NAME,
+    CsrfDoubleSubmitCookie, CsrfMiddlewareConfig, CsrfPattern, DEFAULT_CSRF_TOKEN_FIELD,
+    DEFAULT_CSRF_TOKEN_HEADER, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY, CSRF_PRE_SESSION_KEY,
     generate_random_token,
 };
 use actix_http::body::{BoxBody, EitherBody};
@@ -37,20 +37,20 @@ where
     let session_id_cookie_name = if let Some(session_id) = session_id_cookie_name {
         session_id
     } else {
-        DEFAULT_SESSION_ID_COOKIE_NAME
+        DEFAULT_SESSION_ID_KEY
     };
 
     let session_id_cookie = resp
         .response()
         .cookies()
-        .find(|c| c.name() == session_id_cookie_name || c.name() == PRE_SESSION_COOKIE_NAME)
+        .find(|c| c.name() == session_id_cookie_name || c.name() == CSRF_PRE_SESSION_KEY)
         .map(|c| c.into_owned())
         .unwrap();
 
     let token_cookie_name = if let Some(name) = token_cookie_name {
         name
     } else {
-        DEFAULT_COOKIE_NAME
+        DEFAULT_CSRF_TOKEN_KEY
     };
 
     let token_cookie = resp
@@ -86,7 +86,7 @@ async fn test_double_submit_cookie_behavior() {
     let token_cookie_after_get = resp
         .response()
         .cookies()
-        .find(|c| c.name() == DEFAULT_COOKIE_NAME);
+        .find(|c| c.name() == DEFAULT_CSRF_TOKEN_KEY);
 
     // If there's no new cookie set, the token remains the same
     assert!(
@@ -97,7 +97,7 @@ async fn test_double_submit_cookie_behavior() {
     // Verify token change on a mutating POST
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, initial_token.clone()))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, initial_token.clone()))
         .cookie(initial_token_cookie)
         .cookie(session_id_cookie)
         .to_request();
@@ -108,7 +108,7 @@ async fn test_double_submit_cookie_behavior() {
     let new_token_cookie = resp
         .response()
         .cookies()
-        .find(|c| c.name() == DEFAULT_COOKIE_NAME)
+        .find(|c| c.name() == DEFAULT_CSRF_TOKEN_KEY)
         .expect("New token cookie should be set after POST mutation");
 
     let new_token = new_token_cookie.value();
@@ -124,7 +124,7 @@ async fn valid_csrf_header() {
     let (token, token_cookie, session_id_cookie) = { token_cookie(&app, None, None).await };
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token))
         .cookie(token_cookie)
         .cookie(session_id_cookie)
         .to_request();
@@ -175,7 +175,7 @@ async fn invalid_csrf_header() {
         .uri("/submit")
         .cookie(token_cookie)
         .cookie(session_id_cookie)
-        .insert_header((DEFAULT_HEADER, "wrong-token"))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, "wrong-token"))
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -284,7 +284,7 @@ async fn double_submit_cookie_token_rotation() {
     // Perform a POST request with the initial token
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, initial_token.clone()))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, initial_token.clone()))
         .cookie(initial_token_cookie)
         .cookie(initial_session_cookie)
         .to_request();
@@ -320,7 +320,7 @@ async fn token_refresh_on_successful_mutation() {
     // POST with valid token
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token1.clone()))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token1.clone()))
         .cookie(token1_cookie)
         .cookie(session1_cookie)
         .to_request();
@@ -339,8 +339,8 @@ async fn custom_config_header_name() {
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::DoubleSubmitCookie,
         manual_multipart: false,
-        session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
-        token_cookie_name: DEFAULT_COOKIE_NAME.to_string(),
+        session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
+        token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.to_string(),
         token_form_field: "myfield".to_string(),
         token_header_name: HEADER_NAME.to_string(),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
@@ -348,7 +348,7 @@ async fn custom_config_header_name() {
             secure: true,
             same_site: SameSite::Lax,
         }),
-        secret_key: Some(get_secret_key()),
+        secret_key: get_secret_key(),
         skip_for: vec![],
         on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
     };
@@ -372,16 +372,16 @@ async fn custom_config_cookie_name() {
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::DoubleSubmitCookie,
         manual_multipart: false,
-        session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
+        session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
         token_cookie_name: COOKIE_NAME.to_string(),
-        token_form_field: DEFAULT_FORM_FIELD.to_string(),
-        token_header_name: DEFAULT_HEADER.to_string(),
+        token_form_field: DEFAULT_CSRF_TOKEN_FIELD.to_string(),
+        token_header_name: DEFAULT_CSRF_TOKEN_HEADER.to_string(),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
             http_only: false,
             secure: true,
             same_site: SameSite::Lax,
         }),
-        secret_key: Some(get_secret_key()),
+        secret_key: get_secret_key(),
         skip_for: vec![],
         on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
     };
@@ -391,7 +391,7 @@ async fn custom_config_cookie_name() {
 
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token))
         .cookie(token_cookie)
         .cookie(session_id_cookie)
         .to_request();
@@ -406,8 +406,8 @@ async fn custom_config_form_field_name() {
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::DoubleSubmitCookie,
         manual_multipart: false,
-        session_id_cookie_name: DEFAULT_SESSION_ID_COOKIE_NAME.to_string(),
-        token_cookie_name: DEFAULT_COOKIE_NAME.to_string(),
+        session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
+        token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.to_string(),
         token_form_field: FIELD_NAME.to_string(),
         token_header_name: "myheader".to_string(),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
@@ -415,7 +415,7 @@ async fn custom_config_form_field_name() {
             secure: true,
             same_site: SameSite::Lax,
         }),
-        secret_key: Some(get_secret_key()),
+        secret_key: get_secret_key(),
         skip_for: vec![],
         on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
     };
@@ -442,7 +442,7 @@ async fn handles_large_chunked_body() {
     let large = "a".repeat(1024 * 1024);
     let req = test::TestRequest::post()
         .uri("/submit")
-        .insert_header((DEFAULT_HEADER, token))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token))
         .insert_header(ContentType::form_url_encoded())
         .cookie(token_cookie)
         .cookie(session_id_cookie)
@@ -573,7 +573,7 @@ async fn token_should_be_unforgeable() {
     let req = test::TestRequest::post()
         .uri("/submit")
         .cookie(token_cookie)
-        .insert_header((DEFAULT_HEADER, forged_token))
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, forged_token))
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
