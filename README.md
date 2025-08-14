@@ -5,7 +5,7 @@ cookie and synchronizer token patterns (with actix-session) out of the box. Flex
 test coverage for common attacks and edge cases.
 
 - Store CSRF tokens as:
-    - **Stateless double submit cookie**
+    - Stateless double submit cookie
     - Synchronizer token in persistent storage via `actix-session`
 - Implemented following
   the [OWASP CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
