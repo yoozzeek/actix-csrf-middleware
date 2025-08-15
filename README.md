@@ -17,8 +17,7 @@ test coverage for common attacks and edge cases.
     - `application/json`
     - `application/x-www-form-urlencoded`
 - Configurable cookie, header, and form field names
-- Helpers for manually extracting and validating CSRF tokens at the handler level—useful for protecting
-  `multipart/form-data` requests with binary files without reading the body in middleware
+- Helpers for manually extracting and validating CSRF tokens at the handler level are useful for processing `multipart/form-data` requests without expensive body reading in middleware
 - Enabled by default for all mutating (`POST`,`PUT`,`PATCH`,`DELETE`) http requests; supports per-path CSRF exclusion
   via `skip_for`.
 - Custom error handler (coming soon)
