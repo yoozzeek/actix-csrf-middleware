@@ -851,13 +851,15 @@ pub fn validate_hmac_token(session_id: &str, token: &[u8], secret: &[u8]) -> Res
     }
     let (hmac_hex, csrf_token) = (parts[0], parts[1]);
 
+    let hmac_bytes = hex::decode(hmac_hex).map_err(actix_web::error::ErrorInternalServerError)?;
+
     let mut mac = Hmac::<Sha256>::new_from_slice(secret)
         .map_err(actix_web::error::ErrorInternalServerError)?;
-    let message = format!("{}!{}", session_id, csrf_token);
-    mac.update(message.as_bytes());
-    let expected_hmac = mac.finalize().into_bytes();
+    mac.update(session_id.as_bytes());
+    mac.update(b"!");
+    mac.update(csrf_token.as_bytes());
 
-    let hmac_bytes = hex::decode(hmac_hex).map_err(actix_web::error::ErrorInternalServerError)?;
+    let expected_hmac = mac.finalize().into_bytes();
 
     Ok(eq_tokens(&expected_hmac, &hmac_bytes))
 }
