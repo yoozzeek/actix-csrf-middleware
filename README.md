@@ -4,6 +4,11 @@ CSRF protection middleware for [Actix Web](https://github.com/actix/actix-web) a
 cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to configure, and includes
 test coverage for common attacks and edge cases.
 
+**WARNING:** This crate has not been audited and may contain bugs and security flaws. This implementation is NOT ready
+for production use.
+
+## Overview
+
 - Store CSRF tokens as:
     - Stateless double submit cookie
     - Synchronizer token in persistent storage via `actix-session`
