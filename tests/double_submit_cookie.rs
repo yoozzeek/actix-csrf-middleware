@@ -269,6 +269,8 @@ async fn custom_config_header_name() {
         anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.to_string(),
         token_form_field: "myfield".to_string(),
         token_header_name: HEADER_NAME.to_string(),
+        #[cfg(feature = "actix-session")]
+        anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
             http_only: false,
             secure: true,
@@ -305,6 +307,8 @@ async fn custom_config_cookie_name() {
         anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.to_string(),
         token_form_field: DEFAULT_CSRF_TOKEN_FIELD.to_string(),
         token_header_name: DEFAULT_CSRF_TOKEN_HEADER.to_string(),
+        #[cfg(feature = "actix-session")]
+        anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
             http_only: false,
             secure: true,
@@ -342,6 +346,8 @@ async fn custom_config_form_field_name() {
         anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.to_string(),
         token_form_field: FIELD_NAME.to_string(),
         token_header_name: "myheader".to_string(),
+        #[cfg(feature = "actix-session")]
+        anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
             http_only: false,
             secure: true,
