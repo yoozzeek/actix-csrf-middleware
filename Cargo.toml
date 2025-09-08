@@ -1,6 +1,6 @@
 [package]
 name = "actix-csrf-middleware"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 authors = ["Andrew <zeek@tuta.com>"]
@@ -9,6 +9,7 @@ keywords = ["security", "csrf", "web", "middleware", "actix-web"]
 description = "CSRF protection middleware for Actix Web applications. Supports double submit cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to configure, and includes test coverage for common attacks and edge cases."
 documentation = "https://docs.rs/actix-csrf-middleware"
 rust-version = "1.56.0"
+exclude = ["examples/**"]
 
 [lib]
 crate-type = ["rlib"]

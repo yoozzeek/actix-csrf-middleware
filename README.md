@@ -1,5 +1,11 @@
 # actix-csrf-middleware
 
+[![CI](https://github.com/yoozzeek/actix-csrf-middleware/actions/workflows/ci.yml/badge.svg)](https://github.com/yoozzeek/actix-csrf-middleware/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/actix-csrf-middleware.svg)](https://crates.io/crates/actix-csrf-middleware)
+[![Docs.rs](https://docs.rs/actix-csrf-middleware/badge.svg)](https://docs.rs/actix-csrf-middleware)
+[![Downloads](https://img.shields.io/crates/d/actix-csrf-middleware.svg)](https://crates.io/crates/actix-csrf-middleware)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
 CSRF protection middleware for [Actix Web](https://github.com/actix/actix-web) applications. Supports double submit
 cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to configure, and includes
 test coverage for common attacks and edge cases.
@@ -17,114 +23,25 @@ for production use.
     - CSRF token is a 256-bit cryptographically secure random value
     - For the double submit cookie pattern, hashes the session/pre-session ID with the CSRF token using HMAC-SHA256
     - Compares tokens in constant time to prevent timing attacks
-- Protect unauthorized routes with signed, stateless pre-sessions
+- Protect unauthorized routes with signed, stateless pre-sessions (cookie is always HttpOnly=true, Secure=true,
+  SameSite=Strict)
 - Automatically extract and verify tokens from:
     - `application/json`
     - `application/x-www-form-urlencoded`
 - Configurable cookie, header, and form field names
-- Helpers for manually extracting and validating CSRF tokens at the handler level are useful for processing `multipart/form-data` requests without expensive body reading in middleware
+- Optional Origin/Referer enforcement for mutating requests (configurable)
+- Helpers for manually extracting and validating CSRF tokens at the handler level are useful for processing
+  `multipart/form-data` requests without expensive body reading in middleware
 - Enabled by default for all mutating (`POST`,`PUT`,`PATCH`,`DELETE`) http requests; supports per-path CSRF exclusion
   via `skip_for`.
-- Custom error handler (coming soon)
 
 ## Examples
 
-### Basic Usage: Signed Double Submit Cookie
+Minimal runnable examples are provided in the examples directory:
 
-By default, CsrfMiddleware uses the signed double submit cookie pattern (per OWASP). CSRF validation relies solely on
-the cookie and request header/body, not a backend session store. `HttpOnly=false` is set for the CSRF cookie so that
-modern frontend frameworks can read and transmit the token in a custom header.
-
-The token is generated as:<br>
-
-```
-hmac = HMAC_SHA256(secret_key, session_or_pre_session_id + "!" + csrf_token) 
-token = hmac + "." + csrf_token
-```
-
-Dependencies:
-
-```
-[dependencies]
-actix-csrf-middleware = { git = "https://github.com/yoozzeek/actix-csrf-middleware.git" }
-```
-
-Code:
-
-```rust
-use actix_web::{web, App, HttpServer, HttpResponse};
-use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken};
-
-fn main() -> std::io::Result<()> {
-    let csrf_config = CsrfMiddlewareConfig::double_submit_cookie();
-    HttpServer::new(|| {
-        App::new()
-            // Wraps all routes and enabled protection
-            .wrap(CsrfMiddleware::new(csrf_config))
-            // Inject CSRF token to your form
-            .route("/form", web::get().to(|csrf: CsrfToken| async move {
-                HttpResponse::Ok().body(format!("token:{}", csrf.0))
-            }))
-            // Only called if CSRF token is valid
-            .route("/submit", web::post().to(|| async move {
-                HttpResponse::Ok().body("OK")
-            }))
-    })
-        .bind(("127.0.0.1", 8080))?
-        .run()
-}
-```
-
-### Synchronizer Token
-
-To enable the synchronizer token pattern activate session feature and wrap with `actix-session` middleware (
-see [actix-session](https://docs.rs/actix-session)).
-
-Dependencies:
-
-```
-[dependencies]
-actix-csrf-middleware = { git = "https://github.com/yoozzeek/actix-csrf-middleware.git", features = ["session"] }
-```
-
-Code:
-
-```rust
-use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig, CsrfPattern, CsrfToken};
-use actix_session::{SessionMiddleware, storage::CookieSessionStore};
-
-fn main() -> std::io::Result<()> {
-    let session_store = CookieSessionStore::default(); // you can use redis here
-    let csrf_config = CsrfMiddlewareConfig::synchronizer_token();
-
-    HttpServer::new(|| {
-        App::new()
-            .wrap(CsrfMiddleware::new(csrf_config))
-            .wrap(SessionMiddleware::new(session_store, your_secret_key()))
-    })
-        .bind(("127.0.0.1", 8080))?
-        .run()
-}
-```
-
-### Custom Configuration
-
-You can create custom configuration defining `CsrfMiddlewareConfig` struct. In case of using
-default configuration builders `CsrfMiddlewareConfig::synchronizer_token` or
-`CsrfMiddlewareConfig::double_submit_cookie` you can configure middleware with
-special methods such as `with_skip_for`, `with_multipart`, `with_on_error`, etc.
-
-#### CsrfMiddlewareConfig
-
-* `pattern`: configure which pattern to use to store CSRF tokens
-* `session_id_cookie_name`:
-* `token_cookie_name`:
-* `token_form_field`:
-* `token_header_name`:
-* `token_cookie_config`:
-* `secret_key`:
-* `skip_for`:
-* `on_error`:
+- Double Submit Cookie: [examples/double-submit-cookie](examples/double-submit-cookie)
+- Synchronizer Token (requires `actix-session`): [examples/synchronizer-token](examples/synchronizer-token)
+- Rotation After Auth (Double Submit Cookie + RequestExt rotate): [examples/rotation-after-auth](examples/rotation-after-auth)
 
 ## License
 

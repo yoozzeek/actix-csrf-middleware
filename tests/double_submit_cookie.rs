@@ -267,7 +267,6 @@ async fn custom_config_header_name() {
         session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
         token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.to_string(),
         anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.to_string(),
-        anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
         token_form_field: "myfield".to_string(),
         token_header_name: HEADER_NAME.to_string(),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
@@ -304,7 +303,6 @@ async fn custom_config_cookie_name() {
         session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
         token_cookie_name: COOKIE_NAME.to_string(),
         anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.to_string(),
-        anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
         token_form_field: DEFAULT_CSRF_TOKEN_FIELD.to_string(),
         token_header_name: DEFAULT_CSRF_TOKEN_HEADER.to_string(),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
@@ -342,7 +340,6 @@ async fn custom_config_form_field_name() {
         session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
         token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.to_string(),
         anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.to_string(),
-        anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
         token_form_field: FIELD_NAME.to_string(),
         token_header_name: "myheader".to_string(),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
