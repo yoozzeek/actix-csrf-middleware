@@ -9,9 +9,8 @@ use actix_http::{Request, StatusCode};
 use actix_web::cookie::Cookie;
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::http::header::ContentType;
-use actix_web::{test, HttpResponse};
+use actix_web::test;
 use common::*;
-use std::rc::Rc;
 
 fn get_secret_key() -> Vec<u8> {
     b"super-secret".to_vec()
@@ -144,7 +143,8 @@ async fn custom_config_header_name() {
         token_cookie_config: None,
         secret_key: get_secret_key(),
         skip_for: vec![],
-        on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
+        enforce_origin: false,
+        allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
     };
     let app = build_app(cfg).await;
@@ -176,7 +176,8 @@ async fn custom_config_cookie_name() {
         token_cookie_config: None,
         secret_key: get_secret_key(),
         skip_for: vec![],
-        on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
+        enforce_origin: false,
+        allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
     };
     let app = build_app(cfg).await;
@@ -208,7 +209,8 @@ async fn custom_config_form_field_name() {
         token_cookie_config: None,
         secret_key: get_secret_key(),
         skip_for: vec![],
-        on_error: Rc::new(|_| HttpResponse::BadRequest().body("BAD!")),
+        enforce_origin: false,
+        allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
     };
     let app = build_app(cfg).await;

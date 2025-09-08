@@ -32,6 +32,11 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 
+// Strict security defaults for pre-session cookie
+const PRE_SESSION_HTTP_ONLY: bool = true;
+const PRE_SESSION_SECURE: bool = true;
+const PRE_SESSION_SAME_SITE: SameSite = SameSite::Strict;
+
 /// Cookie name or actix-session key used to store the authorized (session-bound) token
 pub const DEFAULT_CSRF_TOKEN_KEY: &str = "CSRF";
 
@@ -109,15 +114,20 @@ pub struct CsrfMiddlewareConfig {
     pub token_cookie_config: Option<CsrfDoubleSubmitCookie>,
     pub secret_key: Vec<u8>,
     pub skip_for: Vec<String>,
+    /// Enforce Origin/Referer checks for mutating requests
+    pub enforce_origin: bool,
+    /// Allowed origins (scheme://host[:port]) when enforce_origin = true
+    pub allowed_origins: Vec<String>,
     /// Maximum allowed body bytes to read when extracting
     /// CSRF tokens from body (POST/PUT/PATCH/DELETE)
     pub max_body_bytes: usize,
-    pub on_error: Rc<dyn Fn(&HttpRequest) -> HttpResponse>,
 }
 
 impl CsrfMiddlewareConfig {
     #[cfg(feature = "actix-session")]
     pub fn synchronizer_token(secret_key: &[u8]) -> Self {
+        check_secret_key(secret_key);
+
         CsrfMiddlewareConfig {
             pattern: CsrfPattern::SynchronizerToken,
             session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
@@ -131,12 +141,15 @@ impl CsrfMiddlewareConfig {
             secret_key: secret_key.into(),
             skip_for: vec![],
             manual_multipart: false,
+            enforce_origin: false,
+            allowed_origins: vec![],
             max_body_bytes: 2 * 1024 * 1024, // 2 MiB default
-            on_error: Rc::new(|_| HttpResponse::BadRequest().body("Invalid CSRF token")),
         }
     }
 
     pub fn double_submit_cookie(secret_key: &[u8]) -> Self {
+        check_secret_key(secret_key);
+
         CsrfMiddlewareConfig {
             pattern: CsrfPattern::DoubleSubmitCookie,
             session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
@@ -154,8 +167,9 @@ impl CsrfMiddlewareConfig {
             secret_key: secret_key.into(),
             skip_for: vec![],
             manual_multipart: false,
+            enforce_origin: false,
+            allowed_origins: vec![],
             max_body_bytes: 2 * 1024 * 1024,
-            on_error: Rc::new(|_| HttpResponse::BadRequest().body("Invalid CSRF token")),
         }
     }
 
@@ -174,16 +188,14 @@ impl CsrfMiddlewareConfig {
         self
     }
 
-    pub fn with_on_error<F>(mut self, on_error: F) -> Self
-    where
-        F: Fn(&HttpRequest) -> HttpResponse + 'static,
-    {
-        self.on_error = Rc::new(on_error);
+    pub fn with_skip_for(mut self, patches: Vec<String>) -> Self {
+        self.skip_for = patches;
         self
     }
 
-    pub fn with_skip_for(mut self, patches: Vec<String>) -> Self {
-        self.skip_for = patches;
+    pub fn with_enforce_origin(mut self, enforce: bool, allowed: Vec<String>) -> Self {
+        self.enforce_origin = enforce;
+        self.allowed_origins = allowed;
         self
     }
 }
@@ -427,6 +439,15 @@ where
             return Either::left(CsrfTokenValidator::CsrfResponse { response: resp });
         }
 
+        // Optionally enforce Origin/Referer before token checks
+        if self.config.enforce_origin && !origin_allowed(req.headers(), &self.config) {
+            let resp = HttpResponse::with_body(StatusCode::FORBIDDEN, "Invalid request origin");
+            return Either::right(ok(req
+                .into_response(resp)
+                .map_into_boxed_body()
+                .map_into_right_body()));
+        }
+
         // Otherwise, process mutating request with token
         // extraction from the body and future validation.
 
@@ -578,7 +599,29 @@ where
                     // Validate client token based on the pattern
                     let valid = match &config.pattern {
                         #[cfg(feature = "actix-session")]
-                        CsrfPattern::SynchronizerToken => eq_tokens(true_token, client_token),
+                        CsrfPattern::SynchronizerToken => {
+                            if eq_tokens(true_token, client_token) {
+                                true
+                            } else {
+                                let alt_valid = {
+                                    let session = req.get_session();
+                                    let alt_key = match token_class
+                                        .as_ref()
+                                        .copied()
+                                        .unwrap_or(TokenClass::Authorized)
+                                    {
+                                        TokenClass::Authorized => &config.anon_session_key_name,
+                                        TokenClass::Anonymous => &config.token_cookie_name,
+                                    };
+                                    let alt = session.get::<String>(alt_key).ok().flatten();
+
+                                    alt.map(|t| eq_tokens(t.as_bytes(), client_token))
+                                        .unwrap_or(false)
+                                };
+
+                                alt_valid
+                            }
+                        }
                         CsrfPattern::DoubleSubmitCookie => {
                             let ctx = token_class
                                 .as_ref()
@@ -592,10 +635,7 @@ where
                                 client_token,
                                 config.secret_key.as_ref(),
                             )
-                            .unwrap_or({
-                                // TODO Handle validation errors
-                                false
-                            })
+                            .unwrap_or(false)
                         }
                     };
 
@@ -807,21 +847,15 @@ where
 
                 // Set pre-session if requested
                 if let Some(pre_session_bytes) = this.set_pre_session {
-                    // Use configured if present, otherwise secure defaults
-                    let (http_only, secure, same_site) = match &config.token_cookie_config {
-                        Some(cfg) => (cfg.http_only, cfg.secure, cfg.same_site),
-                        None => (true, true, SameSite::Lax),
-                    };
-
                     let pre_session_id = std::str::from_utf8(pre_session_bytes)?;
                     let cookie_val =
                         encode_pre_session_cookie(pre_session_id, config.secret_key.as_ref());
 
                     match resp.response_mut().add_cookie(
                         &Cookie::build(CSRF_PRE_SESSION_KEY, cookie_val)
-                            .http_only(http_only)
-                            .secure(secure)
-                            .same_site(same_site)
+                            .http_only(PRE_SESSION_HTTP_ONLY)
+                            .secure(PRE_SESSION_SECURE)
+                            .same_site(PRE_SESSION_SAME_SITE)
                             .path("/")
                             .finish(),
                     ) {
@@ -839,20 +873,16 @@ where
                     }
                 }
 
-                // If requested, clear pre-session cookie
+                // If requested, clear pre-session cookie and anon token cookie
                 if *this.remove_anon_session {
-                    let (http_only, secure, same_site) = match &config.token_cookie_config {
-                        Some(cfg) => (cfg.http_only, cfg.secure, cfg.same_site),
-                        None => (true, true, SameSite::Lax),
-                    };
-
+                    // Expire pre-session
                     let mut del = Cookie::new(CSRF_PRE_SESSION_KEY.to_string(), "");
                     del.set_max_age(time::Duration::seconds(0));
                     del.set_expires(time::OffsetDateTime::UNIX_EPOCH);
                     del.set_path("/");
-                    del.set_http_only(http_only);
-                    del.set_secure(secure);
-                    del.set_same_site(same_site);
+                    del.set_http_only(PRE_SESSION_HTTP_ONLY);
+                    del.set_secure(PRE_SESSION_SECURE);
+                    del.set_same_site(PRE_SESSION_SAME_SITE);
 
                     if let Err(e) = resp.response_mut().add_cookie(&del) {
                         let res = HttpResponse::InternalServerError()
@@ -866,6 +896,28 @@ where
                             .into_response(res)
                             .map_into_boxed_body()
                             .map_into_right_body()));
+                    }
+
+                    // Expire anonymous token cookie
+                    if matches!(config.pattern, CsrfPattern::DoubleSubmitCookie) {
+                        let mut del_tok = Cookie::new(config.anon_token_cookie_name.clone(), "");
+                        del_tok.set_max_age(time::Duration::seconds(0));
+                        del_tok.set_expires(time::OffsetDateTime::UNIX_EPOCH);
+                        del_tok.set_path("/");
+
+                        if let Err(e) = resp.response_mut().add_cookie(&del_tok) {
+                            let res = HttpResponse::InternalServerError()
+                                .body("Failed to expire anon token cookie");
+
+                            error!(
+                                "unable to expire anon token cookie in csrf response: {:?}",
+                                e
+                            );
+                            return Poll::Ready(Ok(resp
+                                .into_response(res)
+                                .map_into_boxed_body()
+                                .map_into_right_body()));
+                        }
                     }
                 }
 
@@ -1096,14 +1148,18 @@ pub trait CsrfRequestExt {
 
 impl CsrfRequestExt for HttpRequest {
     fn rotate_csrf_token_in_response(&self, resp: &mut HttpResponseBuilder) -> Result<(), Error> {
-        if let Some(cfg_rc) = self.extensions().get::<Rc<CsrfMiddlewareConfig>>() {
-            let cfg: &CsrfMiddlewareConfig = cfg_rc.as_ref();
-            rotate_csrf_token_in_response(self, resp, cfg)
-        } else {
-            Err(actix_web::error::ErrorInternalServerError(
-                "CSRF middleware config not found in request extensions",
-            ))
-        }
+        // Clone out the config to avoid holding an extensions borrow across session access
+        let cfg_rc: Rc<CsrfMiddlewareConfig> =
+            match self.extensions().get::<Rc<CsrfMiddlewareConfig>>() {
+                Some(cfg_rc_ref) => cfg_rc_ref.clone(),
+                None => {
+                    return Err(actix_web::error::ErrorInternalServerError(
+                        "CSRF middleware config not found in request extensions",
+                    ))
+                }
+            };
+
+        rotate_csrf_token_in_response(self, resp, cfg_rc.as_ref())
     }
 }
 
@@ -1112,19 +1168,14 @@ pub fn rotate_csrf_token_in_response(
     resp: &mut HttpResponseBuilder,
     config: &CsrfMiddlewareConfig,
 ) -> Result<(), Error> {
-    let (http_only, secure, same_site) = match &config.token_cookie_config {
-        Some(cfg) => (cfg.http_only, cfg.secure, cfg.same_site),
-        None => (true, true, SameSite::Lax),
-    };
-
-    // Always expire the pre-session cookie (best-effort)
+    // Always expire the pre-session cookie (best-effort) with strict flags
     let mut del = Cookie::new(CSRF_PRE_SESSION_KEY.to_string(), "");
     del.set_max_age(time::Duration::seconds(0));
     del.set_expires(time::OffsetDateTime::UNIX_EPOCH);
     del.set_path("/");
-    del.set_http_only(http_only);
-    del.set_secure(secure);
-    del.set_same_site(same_site);
+    del.set_http_only(PRE_SESSION_HTTP_ONLY);
+    del.set_secure(PRE_SESSION_SECURE);
+    del.set_same_site(PRE_SESSION_SAME_SITE);
     resp.cookie(del);
 
     match config.pattern {
@@ -1160,6 +1211,11 @@ pub fn rotate_csrf_token_in_response(
                 config.secret_key.as_ref(),
             );
 
+            let (http_only, secure, same_site) = match &config.token_cookie_config {
+                Some(cfg) => (cfg.http_only, cfg.secure, cfg.same_site),
+                None => (true, true, SameSite::Lax),
+            };
+
             let csrf_cookie = Cookie::build(&config.token_cookie_name, token)
                 .http_only(http_only)
                 .secure(secure)
@@ -1167,11 +1223,56 @@ pub fn rotate_csrf_token_in_response(
                 .path("/")
                 .finish();
 
+            // Also expire anonymous token cookie
+            let mut del_anon = Cookie::new(config.anon_token_cookie_name.clone(), "");
+            del_anon.set_max_age(time::Duration::seconds(0));
+            del_anon.set_expires(time::OffsetDateTime::UNIX_EPOCH);
+            del_anon.set_path("/");
+
             resp.cookie(csrf_cookie);
+            resp.cookie(del_anon);
 
             Ok(())
         }
     }
+}
+
+fn check_secret_key(secret_key: &[u8]) {
+    if secret_key.len() < 16 {
+        warn!("csrf secret_key is too short (<16 bytes). Use at least 32 bytes for production.");
+    } else if secret_key.len() < 32 {
+        warn!("csrf secret_key is shorter than 32 bytes; recommend >=32 bytes.");
+    }
+}
+
+fn origin_allowed(headers: &HeaderMap, cfg: &CsrfMiddlewareConfig) -> bool {
+    if !cfg.enforce_origin {
+        return true;
+    }
+
+    if cfg.allowed_origins.is_empty() {
+        return false;
+    }
+
+    // Try Origin header first
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|hv| hv.to_str().ok()) {
+        if cfg.allowed_origins.iter().any(|o| o == origin) {
+            return true;
+        }
+
+        return false;
+    }
+
+    // Fallback requires it starts with allowed origin
+    if let Some(referer) = headers.get(header::REFERER).and_then(|hv| hv.to_str().ok()) {
+        if cfg.allowed_origins.iter().any(|o| referer.starts_with(o)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    false
 }
 
 #[cfg(test)]

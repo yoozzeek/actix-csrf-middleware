@@ -3,8 +3,9 @@ mod common;
 
 use actix_csrf_middleware::{CsrfPattern, DEFAULT_CSRF_TOKEN_FIELD, DEFAULT_CSRF_TOKEN_HEADER};
 use actix_web::{http::header::ContentType, http::StatusCode, test};
-use common::*;
 use serde_json::json;
+
+use common::*;
 
 fn get_secret_key() -> Vec<u8> {
     b"super-secret".to_vec()
