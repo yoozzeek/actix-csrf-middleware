@@ -4,7 +4,7 @@ use actix_session::SessionExt;
 use actix_utils::future::Either;
 use actix_web::{
     body::{EitherBody, MessageBody},
-    cookie::{Cookie, SameSite},
+    cookie::{time, Cookie, SameSite},
     dev::forward_ready,
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
     http::{header, Method},
@@ -32,8 +32,11 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 
-/// Cookie name or actix-session key used to store the token depending on enabled `session` feature.
-pub const DEFAULT_CSRF_TOKEN_KEY: &str = "csrf-token";
+/// Cookie name or actix-session key used to store the authorized (session-bound) token
+pub const DEFAULT_CSRF_TOKEN_KEY: &str = "CSRF";
+
+/// Cookie name used to store the anonymous (pre-session) token
+pub const DEFAULT_CSRF_ANON_TOKEN_KEY: &str = "CSRF-ANON";
 
 /// Csrf token field name in `application/x-www-form-urlencoded` or `application/json` body.
 /// `CsrfMiddleware` will try to extract a token from that field.
@@ -55,6 +58,21 @@ pub const CSRF_PRE_SESSION_KEY: &str = "pre-session";
 const TOKEN_LEN: usize = 32; // 32 bytes -> 256 bits
 
 type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenClass {
+    Anonymous,
+    Authorized,
+}
+
+impl TokenClass {
+    fn as_str(&self) -> &'static str {
+        match self {
+            TokenClass::Anonymous => "anon",
+            TokenClass::Authorized => "auth",
+        }
+    }
+}
 
 /// `CsrfPattern` allows use to configure `CsrfMiddleware` to read and store csrf tokens and
 /// user sessions in client's browser cookie or in any persistent storage like Redis,
@@ -79,12 +97,21 @@ pub struct CsrfMiddlewareConfig {
     pub pattern: CsrfPattern,
     pub manual_multipart: bool,
     pub session_id_cookie_name: String,
+    /// Authorized (session-bound) tokens
     pub token_cookie_name: String,
+    /// Anonymous (pre-session) tokens
+    pub anon_token_cookie_name: String,
+    #[cfg(feature = "actix-session")]
+    /// Anonymous (pre-session) token key for SynchronizerToken    
+    pub anon_session_key_name: String,
     pub token_form_field: String,
     pub token_header_name: String,
     pub token_cookie_config: Option<CsrfDoubleSubmitCookie>,
     pub secret_key: Vec<u8>,
     pub skip_for: Vec<String>,
+    /// Maximum allowed body bytes to read when extracting
+    /// CSRF tokens from body (POST/PUT/PATCH/DELETE)
+    pub max_body_bytes: usize,
     pub on_error: Rc<dyn Fn(&HttpRequest) -> HttpResponse>,
 }
 
@@ -95,12 +122,16 @@ impl CsrfMiddlewareConfig {
             pattern: CsrfPattern::SynchronizerToken,
             session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
             token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.into(),
+            anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.into(),
+            #[cfg(feature = "actix-session")]
+            anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
             token_form_field: DEFAULT_CSRF_TOKEN_FIELD.into(),
             token_header_name: DEFAULT_CSRF_TOKEN_HEADER.into(),
             token_cookie_config: None,
             secret_key: secret_key.into(),
             skip_for: vec![],
             manual_multipart: false,
+            max_body_bytes: 2 * 1024 * 1024, // 2 MiB default
             on_error: Rc::new(|_| HttpResponse::BadRequest().body("Invalid CSRF token")),
         }
     }
@@ -110,6 +141,9 @@ impl CsrfMiddlewareConfig {
             pattern: CsrfPattern::DoubleSubmitCookie,
             session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
             token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.into(),
+            anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.into(),
+            #[cfg(feature = "actix-session")]
+            anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
             token_form_field: DEFAULT_CSRF_TOKEN_FIELD.into(),
             token_header_name: DEFAULT_CSRF_TOKEN_HEADER.into(),
             token_cookie_config: Some(CsrfDoubleSubmitCookie {
@@ -120,12 +154,18 @@ impl CsrfMiddlewareConfig {
             secret_key: secret_key.into(),
             skip_for: vec![],
             manual_multipart: false,
+            max_body_bytes: 2 * 1024 * 1024,
             on_error: Rc::new(|_| HttpResponse::BadRequest().body("Invalid CSRF token")),
         }
     }
 
     pub fn with_multipart(mut self, multipart: bool) -> Self {
         self.manual_multipart = multipart;
+        self
+    }
+
+    pub fn with_max_body_bytes(mut self, limit: usize) -> Self {
+        self.max_body_bytes = limit;
         self
     }
 
@@ -185,35 +225,47 @@ pub struct CsrfMiddlewareService<S> {
 }
 
 impl<S> CsrfMiddlewareService<S> {
-    fn get_session_from_cookie(&self, req: &ServiceRequest) -> (String, bool) {
+    fn get_session_from_cookie(&self, req: &ServiceRequest) -> (String, bool, TokenClass) {
         // Try to extract from session id cookie first,
         // if nothing found then check pre-session or create new one.
         if let Some(id) = req
             .cookie(&self.config.session_id_cookie_name)
             .map(|c| c.value().to_string())
         {
-            (id, false)
-        } else if let Some(id) = req
+            (id, false, TokenClass::Authorized)
+        } else if let Some(val) = req
             .cookie(CSRF_PRE_SESSION_KEY)
             .map(|c| c.value().to_string())
         {
-            (id, false)
+            // Validate signed/encrypted pre-session value; if invalid, rotate
+            if let Some(pre_id) = decode_pre_session_cookie(&val, self.config.secret_key.as_ref()) {
+                (pre_id, false, TokenClass::Anonymous)
+            } else {
+                (generate_random_token(), true, TokenClass::Anonymous)
+            }
         } else {
             // Generate pre-session id here
-            (generate_random_token(), true)
+            (generate_random_token(), true, TokenClass::Anonymous)
         }
     }
 
-    fn get_true_token(&self, req: &ServiceRequest, session_id: Option<&str>) -> (String, bool) {
+    fn get_true_token(
+        &self,
+        req: &ServiceRequest,
+        session_id: Option<&str>,
+        class: TokenClass,
+    ) -> (String, bool) {
         match self.config.pattern {
             // If corresponding feature enabled then get token from persistent session storage
             #[cfg(feature = "actix-session")]
             CsrfPattern::SynchronizerToken => {
                 let session = req.get_session();
-                let found = session
-                    .get::<String>(&self.config.token_cookie_name)
-                    .ok()
-                    .flatten();
+                let key = match class {
+                    TokenClass::Authorized => &self.config.token_cookie_name,
+                    TokenClass::Anonymous => &self.config.anon_session_key_name,
+                };
+
+                let found = session.get::<String>(key).ok().flatten();
 
                 match found {
                     Some(tok) => (tok, false),
@@ -222,16 +274,23 @@ impl<S> CsrfMiddlewareService<S> {
             }
             // Check for csrf token in request cookies
             CsrfPattern::DoubleSubmitCookie => {
-                let token = {
-                    req.cookie(&self.config.token_cookie_name)
-                        .map(|c| c.value().to_string())
+                let (cookie_name, ctx) = match class {
+                    TokenClass::Authorized => {
+                        (&self.config.token_cookie_name, TokenClass::Authorized)
+                    }
+                    TokenClass::Anonymous => {
+                        (&self.config.anon_token_cookie_name, TokenClass::Anonymous)
+                    }
                 };
+
+                let token = { req.cookie(cookie_name).map(|c| c.value().to_string()) };
 
                 match token {
                     Some(tok) => (tok, false),
                     None => {
                         let secret = self.config.secret_key.as_ref();
-                        let tok = generate_hmac_token(
+                        let tok = generate_hmac_token_ctx(
+                            ctx,
                             session_id.expect("Session or pre-session id is passed"),
                             secret,
                         );
@@ -269,30 +328,45 @@ where
                 config: None,
                 set_token: None,
                 set_pre_session: None,
+                token_class: None,
+                remove_anon_session: false,
                 _phantom: PhantomData,
             };
             return Either::left(CsrfTokenValidator::CsrfResponse { response: resp });
         }
 
         // Get current token from cookie or actix-session or generate new one
-        let (true_token, should_set_token, cookie_session): (String, bool, Option<(String, bool)>) =
-            match self.config.pattern {
-                CsrfPattern::DoubleSubmitCookie => {
-                    let (session_id, set_pre_session) = self.get_session_from_cookie(&req);
-                    let (true_token, should_set_token) =
-                        self.get_true_token(&req, Some(&session_id));
-                    (
-                        true_token,
-                        should_set_token,
-                        Some((session_id, set_pre_session)),
-                    )
-                }
-                #[cfg(feature = "actix-session")]
-                CsrfPattern::SynchronizerToken => {
-                    let (token, should_set_token) = self.get_true_token(&req, None);
-                    (token, should_set_token, None)
-                }
-            };
+        let (true_token, should_set_token, cookie_session, token_class): (
+            String,
+            bool,
+            Option<(String, bool)>,
+            Option<TokenClass>,
+        ) = match self.config.pattern {
+            CsrfPattern::DoubleSubmitCookie => {
+                let (session_id, set_pre_session, token_class) = self.get_session_from_cookie(&req);
+                let (true_token, should_set_token) =
+                    self.get_true_token(&req, Some(&session_id), token_class);
+                (
+                    true_token,
+                    should_set_token,
+                    Some((session_id, set_pre_session)),
+                    Some(token_class),
+                )
+            }
+            #[cfg(feature = "actix-session")]
+            CsrfPattern::SynchronizerToken => {
+                // Derive class from cookies and set pre-session cookie if needed
+                let (session_id, set_pre_session, token_class) = self.get_session_from_cookie(&req);
+                let (token, should_set_token) = self.get_true_token(&req, None, token_class);
+
+                (
+                    token,
+                    should_set_token,
+                    Some((session_id, set_pre_session)),
+                    Some(token_class),
+                )
+            }
+        };
 
         req.extensions_mut().insert(CsrfToken(true_token.clone()));
 
@@ -304,15 +378,15 @@ where
         // Skip validation for read only requests, but csrf token still should be
         // added to the response when should_set_token flag is set to true.
         if !is_mutating {
-            let token = if should_set_token {
-                Some(true_token.into_bytes())
+            let mut set_token_bytes = if should_set_token {
+                Some(true_token.clone().into_bytes())
             } else {
                 None
             };
 
-            let session_id = if let Some((session_id, set_pre_session)) = cookie_session {
+            let session_id = if let Some((ref session_id, set_pre_session)) = cookie_session {
                 if set_pre_session {
-                    Some(session_id.into_bytes())
+                    Some(session_id.clone().into_bytes())
                 } else {
                     None
                 }
@@ -320,11 +394,32 @@ where
                 None
             };
 
+            // Ensure an authorized token cookie exists after login (DoubleSubmitCookie only)
+            if self.config.pattern == CsrfPattern::DoubleSubmitCookie {
+                if let (Some(TokenClass::Authorized), Some((ref sess_id, _))) =
+                    (token_class, cookie_session.as_ref())
+                {
+                    // If no authorized token cookie yet, issue one now
+                    if req.cookie(&self.config.token_cookie_name).is_none() {
+                        let tok = generate_hmac_token_ctx(
+                            TokenClass::Authorized,
+                            sess_id,
+                            self.config.secret_key.as_ref(),
+                        );
+                        set_token_bytes = Some(tok.into_bytes());
+                    }
+                }
+            }
+
+            let remove_anon_session = matches!(token_class, Some(TokenClass::Authorized));
+
             let resp = CsrfResponse {
                 fut: self.service.call(req),
                 config: Some(self.config.clone()),
-                set_token: token,
+                set_token: set_token_bytes,
                 set_pre_session: session_id,
+                token_class,
+                remove_anon_session,
                 _phantom: PhantomData,
             };
 
@@ -346,7 +441,7 @@ where
                 if !self.config.manual_multipart {
                     let resp = HttpResponse::with_body(
                         StatusCode::BAD_REQUEST,
-                        "Multipart form data is not enabled by csrf config".to_string(),
+                        "Multipart form data is not enabled by csrf config",
                     );
 
                     return Either::right(ok(req
@@ -355,13 +450,15 @@ where
                         .map_into_right_body()));
                 }
 
-                // Otherwise, consumer reads body, extracts and
+                // Then consumer reads body, extracts and
                 // verifies csrf tokens manually in their handlers.
                 let resp = CsrfResponse {
                     fut: self.service.call(req),
                     config: Some(self.config.clone()),
                     set_token: None,
                     set_pre_session: None,
+                    token_class: None,
+                    remove_anon_session: false,
                     _phantom: PhantomData,
                 };
 
@@ -369,10 +466,10 @@ where
             }
         }
 
-        let session_id = if let Some((session_id, _)) = cookie_session {
-            Some(session_id)
+        let (session_id, token_class) = if let Some((session_id, _)) = cookie_session {
+            (Some(session_id), token_class)
         } else {
-            None
+            (None, token_class)
         };
 
         // Try to extract csrf token from header
@@ -390,6 +487,7 @@ where
                 true_token: true_token.into_bytes(), // TODO Find a way avoid such allocations
                 client_token: token.into_bytes(),
                 session_id,
+                token_class,
                 req: Some(req),
             });
         }
@@ -401,6 +499,7 @@ where
             service: self.service.clone(),
             true_token: true_token.into_bytes(),
             session_id,
+            token_class,
         })
     }
 }
@@ -422,6 +521,7 @@ pin_project! {
             true_token: Vec<u8>,
             client_token: Vec<u8>,
             session_id: Option<String>,
+            token_class: Option<TokenClass>,
             req: Option<ServiceRequest>
         },
         ReadingBody {
@@ -430,6 +530,7 @@ pin_project! {
             req: Option<ServiceRequest>,
             true_token: Vec<u8>,
             session_id: Option<String>,
+            token_class: Option<TokenClass>,
         },
     }
 }
@@ -450,6 +551,7 @@ where
                 true_token,
                 client_token,
                 session_id,
+                token_class,
                 req,
             } => {
                 if let Some(req) = req.take() {
@@ -477,7 +579,12 @@ where
                         #[cfg(feature = "actix-session")]
                         CsrfPattern::SynchronizerToken => eq_tokens(true_token, client_token),
                         CsrfPattern::DoubleSubmitCookie => {
-                            validate_hmac_token(
+                            let ctx = token_class
+                                .as_ref()
+                                .copied()
+                                .unwrap_or(TokenClass::Anonymous);
+                            validate_hmac_token_ctx(
+                                ctx,
                                 session_id
                                     .as_deref()
                                     .expect("session id cannot be empty is hmac validation"),
@@ -503,12 +610,19 @@ where
                     let new_token = match &config.pattern {
                         #[cfg(feature = "actix-session")]
                         CsrfPattern::SynchronizerToken => generate_random_token(),
-                        CsrfPattern::DoubleSubmitCookie => generate_hmac_token(
-                            session_id
-                                .as_deref()
-                                .expect("session id cannot be empty is hmac validation"),
-                            config.secret_key.as_ref(),
-                        ),
+                        CsrfPattern::DoubleSubmitCookie => {
+                            let ctx = token_class
+                                .as_ref()
+                                .copied()
+                                .unwrap_or(TokenClass::Anonymous);
+                            generate_hmac_token_ctx(
+                                ctx,
+                                session_id
+                                    .as_deref()
+                                    .expect("session id cannot be empty is hmac validation"),
+                                config.secret_key.as_ref(),
+                            )
+                        }
                     };
 
                     let resp = CsrfResponse {
@@ -516,6 +630,8 @@ where
                         config: Some(config.clone()),
                         set_token: Some(new_token.into_bytes()),
                         set_pre_session: None,
+                        token_class: *token_class,
+                        remove_anon_session: false,
                         _phantom: PhantomData,
                     };
 
@@ -537,6 +653,7 @@ where
                 req,
                 true_token,
                 session_id,
+                token_class,
             } => {
                 if let Some(mut request) = req.take() {
                     let mut body_bytes = BytesMut::new();
@@ -544,7 +661,21 @@ where
 
                     while let Some(chunk_result) = ready!(payload.poll_next_unpin(cx)) {
                         match chunk_result {
-                            Ok(bytes) => body_bytes.extend_from_slice(&bytes),
+                            Ok(bytes) => {
+                                body_bytes.extend_from_slice(&bytes);
+
+                                if body_bytes.len() > config.max_body_bytes {
+                                    let resp = HttpResponse::with_body(
+                                        StatusCode::PAYLOAD_TOO_LARGE,
+                                        "Request body too large for CSRF token extraction",
+                                    );
+
+                                    return Poll::Ready(Ok(request
+                                        .into_response(resp)
+                                        .map_into_boxed_body()
+                                        .map_into_right_body()));
+                                }
+                            }
                             Err(e) => {
                                 return Poll::Ready(Err(actix_web::error::ErrorBadRequest(e)));
                             }
@@ -575,13 +706,16 @@ where
                         let config = config.clone();
                         let true_token = std::mem::take(true_token);
                         let session_id = session_id.take();
+                        let token_class = token_class.take();
                         let req = Some(request);
+
                         CsrfTokenValidator::MutatingRequest {
                             service,
                             config,
                             true_token,
                             client_token,
                             session_id,
+                            token_class,
                             req,
                         }
                     };
@@ -639,6 +773,8 @@ pin_project! {
         config: Option<Rc<CsrfMiddlewareConfig>>,
         set_token: Option<Vec<u8>>,
         set_pre_session: Option<Vec<u8>>,
+        token_class: Option<TokenClass>,
+        remove_anon_session: bool,
         _phantom: PhantomData<B>,
     }
 }
@@ -670,26 +806,22 @@ where
 
                 // Set pre-session if requested
                 if let Some(pre_session_bytes) = this.set_pre_session {
-                    let cookie_config = match &config.token_cookie_config {
-                        Some(config) => config,
-                        None => {
-                            let res = HttpResponse::InternalServerError()
-                                .body("Token cookie isn't configured for setting pre-session");
-
-                            error!("unable to extract cookie config from csrf middleware config");
-                            return Poll::Ready(Ok(resp
-                                .into_response(res)
-                                .map_into_boxed_body()
-                                .map_into_right_body()));
-                        }
+                    // Use configured if present, otherwise secure defaults
+                    let (http_only, secure, same_site) = match &config.token_cookie_config {
+                        Some(cfg) => (cfg.http_only, cfg.secure, cfg.same_site),
+                        None => (true, true, SameSite::Lax),
                     };
 
                     let pre_session_id = std::str::from_utf8(pre_session_bytes)?;
+                    let cookie_val =
+                        encode_pre_session_cookie(pre_session_id, config.secret_key.as_ref());
+
                     match resp.response_mut().add_cookie(
-                        &Cookie::build(CSRF_PRE_SESSION_KEY, pre_session_id)
-                            .http_only(cookie_config.http_only)
-                            .secure(cookie_config.secure)
-                            .same_site(cookie_config.same_site)
+                        &Cookie::build(CSRF_PRE_SESSION_KEY, cookie_val)
+                            .http_only(http_only)
+                            .secure(secure)
+                            .same_site(same_site)
+                            .path("/")
                             .finish(),
                     ) {
                         Ok(_) => {}
@@ -706,6 +838,36 @@ where
                     }
                 }
 
+                // If requested, clear pre-session cookie
+                if *this.remove_anon_session {
+                    let (http_only, secure, same_site) = match &config.token_cookie_config {
+                        Some(cfg) => (cfg.http_only, cfg.secure, cfg.same_site),
+                        None => (true, true, SameSite::Lax),
+                    };
+
+                    let mut del = Cookie::new(CSRF_PRE_SESSION_KEY.to_string(), "");
+                    del.set_max_age(time::Duration::seconds(0));
+                    del.set_expires(time::OffsetDateTime::UNIX_EPOCH);
+                    del.set_path("/");
+                    del.set_http_only(http_only);
+                    del.set_secure(secure);
+                    del.set_same_site(same_site);
+
+                    if let Err(e) = resp.response_mut().add_cookie(&del) {
+                        let res = HttpResponse::InternalServerError()
+                            .body("Failed to expire pre-session cookie");
+
+                        error!(
+                            "unable to expire pre-session cookie in csrf response: {:?}",
+                            e
+                        );
+                        return Poll::Ready(Ok(resp
+                            .into_response(res)
+                            .map_into_boxed_body()
+                            .map_into_right_body()));
+                    }
+                }
+
                 // Based on configured pattern, set a new token or rotate
                 // the old one for the service response if pattern is passed.
                 if let Some(token_bytes) = this.set_token.take() {
@@ -714,7 +876,7 @@ where
                         Err(e) => {
                             let res = HttpResponse::with_body(
                                 StatusCode::INTERNAL_SERVER_ERROR,
-                                "Failed to convert bytes into string in csrf response".to_string(),
+                                "Failed to convert bytes into string in csrf response",
                             );
 
                             error!(
@@ -732,17 +894,26 @@ where
                     match config.pattern {
                         #[cfg(feature = "actix-session")]
                         CsrfPattern::SynchronizerToken => {
-                            // Set a new token into actix session
-                            match resp
-                                .request()
-                                .get_session()
-                                .insert(&config.token_cookie_name, new_token)
-                            {
+                            // Remove anon session key if requested (best-effort)
+                            if *this.remove_anon_session {
+                                let _ = resp
+                                    .request()
+                                    .get_session()
+                                    .remove(&config.anon_session_key_name);
+                            }
+
+                            // Set a new token into actix session under key decided by class
+                            let key = match this.token_class.unwrap_or(TokenClass::Authorized) {
+                                TokenClass::Authorized => &config.token_cookie_name,
+                                TokenClass::Anonymous => &config.anon_session_key_name,
+                            };
+
+                            match resp.request().get_session().insert(key, new_token) {
                                 Ok(()) => {}
                                 Err(e) => {
                                     let res = HttpResponse::with_body(
                                         StatusCode::INTERNAL_SERVER_ERROR,
-                                        "Failed to insert CSRF token into session".to_string(),
+                                        "Failed to insert CSRF token into session",
                                     );
 
                                     error!("unable to set a csrf token with actix session in csrf response: {:?}",e);
@@ -771,12 +942,19 @@ where
                                 }
                             };
 
-                            let new_token_cookie =
-                                Cookie::build(&config.token_cookie_name, new_token)
-                                    .http_only(cookie_config.http_only)
-                                    .secure(cookie_config.secure)
-                                    .same_site(cookie_config.same_site)
-                                    .finish();
+                            // Choose cookie name based on token class
+                            let cookie_name =
+                                match this.token_class.unwrap_or(TokenClass::Anonymous) {
+                                    TokenClass::Authorized => &config.token_cookie_name,
+                                    TokenClass::Anonymous => &config.anon_token_cookie_name,
+                                };
+
+                            let new_token_cookie = Cookie::build(cookie_name, new_token)
+                                .http_only(cookie_config.http_only)
+                                .secure(cookie_config.secure)
+                                .same_site(cookie_config.same_site)
+                                .path("/")
+                                .finish();
 
                             // Update token cookie with a new token
                             match resp.response_mut().add_cookie(&new_token_cookie) {
@@ -833,35 +1011,85 @@ pub fn eq_tokens(token_a: &[u8], token_b: &[u8]) -> bool {
     token_a.ct_eq(token_b).unwrap_u8() == 1
 }
 
-pub fn generate_hmac_token(session_id: &str, secret: &[u8]) -> String {
+pub fn generate_hmac_token_ctx(class: TokenClass, id: &str, secret: &[u8]) -> String {
     let tok = generate_random_token();
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC can take key of any size");
-    let message = format!("{}!{}", session_id, tok);
-    mac.update(message.as_bytes());
-
+    mac.update(class.as_str().as_bytes());
+    mac.update(b"|");
+    mac.update(id.as_bytes());
+    mac.update(b"|");
+    mac.update(tok.as_bytes());
     let hmac_hex = hex::encode(mac.finalize().into_bytes());
     format!("{}.{}", hmac_hex, tok)
 }
 
-pub fn validate_hmac_token(session_id: &str, token: &[u8], secret: &[u8]) -> Result<bool, Error> {
+/// Backward-compat API: generates an authorized (session-bound) token.
+pub fn generate_hmac_token(session_id: &str, secret: &[u8]) -> String {
+    generate_hmac_token_ctx(TokenClass::Authorized, session_id, secret)
+}
+
+fn encode_pre_session_cookie(id: &str, secret: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC can take key of any size");
+    mac.update(b"pre|");
+    mac.update(id.as_bytes());
+
+    let sig = hex::encode(mac.finalize().into_bytes());
+    format!("{}.{}", sig, id)
+}
+
+fn decode_pre_session_cookie(val: &str, secret: &[u8]) -> Option<String> {
+    let parts: Vec<&str> = val.split('.').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let (sig_hex, id) = (parts[0], parts[1]);
+    let sig_bytes = hex::decode(sig_hex).ok()?;
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).ok()?;
+    mac.update(b"pre|");
+    mac.update(id.as_bytes());
+
+    let expected = mac.finalize().into_bytes();
+
+    if eq_tokens(&expected, &sig_bytes) {
+        Some(id.to_string())
+    } else {
+        None
+    }
+}
+
+pub fn validate_hmac_token_ctx(
+    class: TokenClass,
+    id: &str,
+    token: &[u8],
+    secret: &[u8],
+) -> Result<bool, Error> {
     let token_str = std::str::from_utf8(token)?;
     let parts: Vec<&str> = token_str.split('.').collect();
     if parts.len() != 2 {
         return Ok(false);
     }
-    let (hmac_hex, csrf_token) = (parts[0], parts[1]);
 
+    let (hmac_hex, csrf_token) = (parts[0], parts[1]);
     let hmac_bytes = hex::decode(hmac_hex).map_err(actix_web::error::ErrorInternalServerError)?;
 
     let mut mac = Hmac::<Sha256>::new_from_slice(secret)
         .map_err(actix_web::error::ErrorInternalServerError)?;
-    mac.update(session_id.as_bytes());
-    mac.update(b"!");
+    mac.update(class.as_str().as_bytes());
+    mac.update(b"|");
+    mac.update(id.as_bytes());
+    mac.update(b"|");
     mac.update(csrf_token.as_bytes());
 
     let expected_hmac = mac.finalize().into_bytes();
 
     Ok(eq_tokens(&expected_hmac, &hmac_bytes))
+}
+
+/// Backward-compat API: validates an authorized (session-bound) token.
+pub fn validate_hmac_token(session_id: &str, token: &[u8], secret: &[u8]) -> Result<bool, Error> {
+    validate_hmac_token_ctx(TokenClass::Authorized, session_id, token, secret)
 }
 
 #[cfg(test)]

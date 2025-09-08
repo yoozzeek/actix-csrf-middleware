@@ -37,6 +37,7 @@ log = "0.4.27"
 criterion = "0.5"
 actix-rt = "2.10"
 actix-multipart = "0.7.2"
+proptest = "1.4"
 
 [[bench]]
 name = "hmac_token"
