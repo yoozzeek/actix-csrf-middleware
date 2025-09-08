@@ -1,8 +1,8 @@
 mod common;
 
 use actix_csrf_middleware::{
-    generate_hmac_token_ctx, validate_hmac_token, CsrfMiddlewareConfig, TokenClass, DEFAULT_CSRF_ANON_TOKEN_KEY,
-    DEFAULT_CSRF_TOKEN_HEADER,
+    generate_hmac_token_ctx, validate_hmac_token, CsrfMiddlewareConfig, TokenClass,
+    DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_HEADER,
 };
 use actix_web::{http::StatusCode, test};
 use common::*;

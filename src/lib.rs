@@ -9,7 +9,7 @@ use actix_web::{
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
     http::{header, Method},
     web::BytesMut,
-    Error, FromRequest, HttpMessage, HttpRequest, HttpResponse,
+    Error, FromRequest, HttpMessage, HttpRequest, HttpResponse, HttpResponseBuilder,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::{
@@ -369,6 +369,7 @@ where
         };
 
         req.extensions_mut().insert(CsrfToken(true_token.clone()));
+        req.extensions_mut().insert(self.config.clone());
 
         let is_mutating = matches!(
             *req.method(),
@@ -1082,9 +1083,95 @@ pub fn validate_hmac_token_ctx(
     Ok(eq_tokens(&expected_hmac, &hmac_bytes))
 }
 
-/// Backward-compat API: validates an authorized (session-bound) token.
+/// Test util: validates an authorized token
 pub fn validate_hmac_token(session_id: &str, token: &[u8], secret: &[u8]) -> Result<bool, Error> {
     validate_hmac_token_ctx(TokenClass::Authorized, session_id, token, secret)
+}
+
+/// Extension trait for Actix HttpRequest to rotate
+/// CSRF token without passing the config explicitly.
+pub trait CsrfRequestExt {
+    fn rotate_csrf_token_in_response(&self, resp: &mut HttpResponseBuilder) -> Result<(), Error>;
+}
+
+impl CsrfRequestExt for HttpRequest {
+    fn rotate_csrf_token_in_response(&self, resp: &mut HttpResponseBuilder) -> Result<(), Error> {
+        if let Some(cfg_rc) = self.extensions().get::<Rc<CsrfMiddlewareConfig>>() {
+            let cfg: &CsrfMiddlewareConfig = cfg_rc.as_ref();
+            rotate_csrf_token_in_response(self, resp, cfg)
+        } else {
+            Err(actix_web::error::ErrorInternalServerError(
+                "CSRF middleware config not found in request extensions",
+            ))
+        }
+    }
+}
+
+pub fn rotate_csrf_token_in_response(
+    req: &HttpRequest,
+    resp: &mut HttpResponseBuilder,
+    config: &CsrfMiddlewareConfig,
+) -> Result<(), Error> {
+    let (http_only, secure, same_site) = match &config.token_cookie_config {
+        Some(cfg) => (cfg.http_only, cfg.secure, cfg.same_site),
+        None => (true, true, SameSite::Lax),
+    };
+
+    // Always expire the pre-session cookie (best-effort)
+    let mut del = Cookie::new(CSRF_PRE_SESSION_KEY.to_string(), "");
+    del.set_max_age(time::Duration::seconds(0));
+    del.set_expires(time::OffsetDateTime::UNIX_EPOCH);
+    del.set_path("/");
+    del.set_http_only(http_only);
+    del.set_secure(secure);
+    del.set_same_site(same_site);
+    resp.cookie(del);
+
+    match config.pattern {
+        #[cfg(feature = "actix-session")]
+        CsrfPattern::SynchronizerToken => {
+            let session = req.get_session();
+            let new_token = generate_random_token();
+
+            let _ = session.remove(&config.anon_session_key_name);
+
+            session
+                .insert(&config.token_cookie_name, new_token)
+                .map_err(|_| {
+                    actix_web::error::ErrorInternalServerError(
+                        "Failed to rotate CSRF token in session",
+                    )
+                })?;
+
+            Ok(())
+        }
+        CsrfPattern::DoubleSubmitCookie => {
+            // Need the session id from cookie
+            let session_id = req
+                .cookie(&config.session_id_cookie_name)
+                .map(|c| c.value().to_string())
+                .ok_or_else(|| {
+                    actix_web::error::ErrorBadRequest("Missing session id cookie for CSRF rotation")
+                })?;
+
+            let token = generate_hmac_token_ctx(
+                TokenClass::Authorized,
+                &session_id,
+                config.secret_key.as_ref(),
+            );
+
+            let csrf_cookie = Cookie::build(&config.token_cookie_name, token)
+                .http_only(http_only)
+                .secure(secure)
+                .same_site(same_site)
+                .path("/")
+                .finish();
+
+            resp.cookie(csrf_cookie);
+
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1097,14 +1184,24 @@ mod tests {
     #[test]
     fn test_generate_and_validate_hmac_token() {
         let token = generate_hmac_token_ctx(TokenClass::Authorized, SESSION_ID, SECRET.as_bytes());
-        let res = validate_hmac_token(SESSION_ID, token.as_bytes(), SECRET.as_bytes());
+        let res = validate_hmac_token_ctx(
+            TokenClass::Authorized,
+            SESSION_ID,
+            token.as_bytes(),
+            SECRET.as_bytes(),
+        );
         assert!(res.unwrap());
     }
 
     #[test]
     fn test_handle_invalid_hmac_token() {
         let token = generate_hmac_token_ctx(TokenClass::Authorized, SESSION_ID, SECRET.as_bytes());
-        let res = validate_hmac_token(SESSION_ID, token.as_bytes(), SECRET.as_bytes());
+        let res = validate_hmac_token_ctx(
+            TokenClass::Authorized,
+            SESSION_ID,
+            token.as_bytes(),
+            SECRET.as_bytes(),
+        );
         assert!(res.unwrap());
     }
 }
