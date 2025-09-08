@@ -1,7 +1,8 @@
 mod common;
 
 use actix_csrf_middleware::{
-    generate_hmac_token, validate_hmac_token, CsrfMiddlewareConfig, DEFAULT_CSRF_TOKEN_HEADER,
+    generate_hmac_token_ctx, validate_hmac_token, CsrfMiddlewareConfig, TokenClass, DEFAULT_CSRF_ANON_TOKEN_KEY,
+    DEFAULT_CSRF_TOKEN_HEADER,
 };
 use actix_web::{http::StatusCode, test};
 use common::*;
@@ -37,7 +38,7 @@ async fn test_token_entropy_analysis() {
     // Generate multiple tokens and check for patterns
     let mut tokens = HashSet::new();
     for _ in 0..1000 {
-        let token = generate_hmac_token("session_id", &secret_key);
+        let token = generate_hmac_token_ctx(TokenClass::Authorized, "session_id", &secret_key);
         tokens.insert(token);
     }
 
@@ -55,7 +56,7 @@ async fn test_hmac_timing_attack_resistance() {
     let secret_key = b"timing-attack-test-secret".to_vec();
     let session_id = "test_session";
 
-    let valid_token = generate_hmac_token(session_id, &secret_key);
+    let valid_token = generate_hmac_token_ctx(TokenClass::Authorized, session_id, &secret_key);
 
     // Test multiple invalid tokens with same prefix (timing attack attempt)
     let invalid_tokens = vec![
@@ -67,9 +68,8 @@ async fn test_hmac_timing_attack_resistance() {
 
     for invalid_token in invalid_tokens {
         let result = validate_hmac_token(session_id, invalid_token.as_bytes(), &secret_key);
-        match result {
-            Ok(is_valid) => assert!(!is_valid, "Invalid token should not validate"),
-            Err(_) => {} // Expected for malformed tokens
+        if let Ok(is_valid) = result {
+            assert!(!is_valid, "Invalid token should not validate");
         }
     }
 }
@@ -80,8 +80,8 @@ async fn test_key_reuse_vulnerability() {
     let shared_secret = b"shared-secret-key".to_vec();
 
     // Simulate two different applications using the same key
-    let token1 = generate_hmac_token("app1_session", &shared_secret);
-    let token2 = generate_hmac_token("app2_session", &shared_secret);
+    let token1 = generate_hmac_token_ctx(TokenClass::Authorized, "app1_session", &shared_secret);
+    let token2 = generate_hmac_token_ctx(TokenClass::Authorized, "app2_session", &shared_secret);
 
     // Tokens should be different even with same key
     assert_ne!(
@@ -103,7 +103,7 @@ async fn test_token_format_information_disclosure() {
     let secret_key = b"format-test-secret".to_vec();
     let session_id = "format_test_session";
 
-    let token = generate_hmac_token(session_id, &secret_key);
+    let token = generate_hmac_token_ctx(TokenClass::Authorized, session_id, &secret_key);
 
     // Token should follow expected format: hmac.random_part
     let parts: Vec<&str> = token.split('.').collect();
@@ -130,7 +130,7 @@ async fn test_empty_secret_key_handling() {
     let session_id = "test_session";
 
     // Should handle empty key gracefully
-    let token = generate_hmac_token(session_id, empty_key);
+    let token = generate_hmac_token_ctx(TokenClass::Authorized, session_id, empty_key);
     let validation = validate_hmac_token(session_id, token.as_bytes(), empty_key);
 
     // Should still work but is cryptographically weak
@@ -213,10 +213,11 @@ where
         .map(|c| c.into_owned())
         .unwrap();
 
+    // Prefer authorized cookie name; if not present (anon flow), fall back to anon cookie name
     let token_cookie = resp
         .response()
         .cookies()
-        .find(|c| c.name() == token_cookie_name)
+        .find(|c| c.name() == token_cookie_name || c.name() == DEFAULT_CSRF_ANON_TOKEN_KEY)
         .map(|c| c.into_owned())
         .unwrap();
 

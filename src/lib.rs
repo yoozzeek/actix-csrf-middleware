@@ -1023,11 +1023,6 @@ pub fn generate_hmac_token_ctx(class: TokenClass, id: &str, secret: &[u8]) -> St
     format!("{}.{}", hmac_hex, tok)
 }
 
-/// Backward-compat API: generates an authorized (session-bound) token.
-pub fn generate_hmac_token(session_id: &str, secret: &[u8]) -> String {
-    generate_hmac_token_ctx(TokenClass::Authorized, session_id, secret)
-}
-
 fn encode_pre_session_cookie(id: &str, secret: &[u8]) -> String {
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC can take key of any size");
     mac.update(b"pre|");
@@ -1101,14 +1096,14 @@ mod tests {
 
     #[test]
     fn test_generate_and_validate_hmac_token() {
-        let token = generate_hmac_token(SESSION_ID, SECRET.as_bytes());
+        let token = generate_hmac_token_ctx(TokenClass::Authorized, SESSION_ID, SECRET.as_bytes());
         let res = validate_hmac_token(SESSION_ID, token.as_bytes(), SECRET.as_bytes());
         assert!(res.unwrap());
     }
 
     #[test]
     fn test_handle_invalid_hmac_token() {
-        let token = generate_hmac_token(SESSION_ID, SECRET.as_bytes());
+        let token = generate_hmac_token_ctx(TokenClass::Authorized, SESSION_ID, SECRET.as_bytes());
         let res = validate_hmac_token(SESSION_ID, token.as_bytes(), SECRET.as_bytes());
         assert!(res.unwrap());
     }
