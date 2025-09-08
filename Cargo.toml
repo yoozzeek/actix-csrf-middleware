@@ -1,6 +1,6 @@
 [package]
 name = "actix-csrf-middleware"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
 authors = ["Andrew <zeek@tuta.com>"]
@@ -9,6 +9,7 @@ keywords = ["security", "csrf", "web", "middleware", "actix-web"]
 description = "CSRF protection middleware for Actix Web applications. Supports double submit cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to configure, and includes test coverage for common attacks and edge cases."
 documentation = "https://docs.rs/actix-csrf-middleware"
 rust-version = "1.56.0"
+exclude = ["examples/**"]
 
 [lib]
 crate-type = ["rlib"]
@@ -37,6 +38,7 @@ log = "0.4.27"
 criterion = "0.5"
 actix-rt = "2.10"
 actix-multipart = "0.7.2"
+proptest = "1.4"
 
 [[bench]]
 name = "hmac_token"
@@ -44,8 +46,4 @@ harness = false
 
 [[bench]]
 name = "csrf_token"
-harness = false
-
-[[bench]]
-name = "http_memory_profile"
 harness = false

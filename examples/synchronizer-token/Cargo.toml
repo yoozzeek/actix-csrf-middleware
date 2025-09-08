@@ -1,0 +1,10 @@
+[package]
+name = "actix-csrf-middleware-example-sync"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = "4"
+actix-session = { version = "0.10", features = ["cookie-session"] }
+actix-csrf-middleware = { path = "../../", features = ["session"] }
+
