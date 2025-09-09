@@ -8,6 +8,7 @@ fn bench_csrf_token_gen(c: &mut Criterion) {
 fn bench_eq_csrf_tokens(c: &mut Criterion) {
     let token1 = generate_random_token();
     let token2 = generate_random_token();
+
     c.bench_function("eq_csrf_tokens_match", |b| {
         b.iter(|| eq_tokens(token1.as_bytes(), token1.as_bytes()))
     });

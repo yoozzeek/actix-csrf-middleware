@@ -8,7 +8,12 @@ fn get_secret_key() -> Vec<u8> {
 }
 
 fn bench_hmac_token_gen(c: &mut Criterion) {
-    c.bench_function("generate_hmac_token", |b| b.iter(generate_random_token));
+    let sess_id = generate_random_token();
+    let secret = get_secret_key();
+
+    c.bench_function("generate_hmac_token", |b| {
+        b.iter(|| generate_hmac_token_ctx(TokenClass::Authorized, &sess_id, &secret))
+    });
 }
 
 fn bench_validate_hmac_tokens(c: &mut Criterion) {
@@ -16,6 +21,7 @@ fn bench_validate_hmac_tokens(c: &mut Criterion) {
     let sess2_id = generate_random_token();
     let token1 = generate_hmac_token_ctx(TokenClass::Authorized, &sess1_id, &get_secret_key());
     let _token2 = generate_hmac_token_ctx(TokenClass::Authorized, &sess2_id, &get_secret_key());
+
     c.bench_function("hmac_tokens_valid", |b| {
         b.iter(|| validate_hmac_token(&sess1_id, token1.as_bytes(), &get_secret_key()))
     });

@@ -15,7 +15,7 @@ use common::*;
 use hmac::Mac;
 
 fn get_secret_key() -> Vec<u8> {
-    b"super-secret".to_vec()
+    b"super-secret-super-secret-super-secret-xx".to_vec()
 }
 
 pub async fn token_cookie<S>(
@@ -276,7 +276,7 @@ async fn custom_config_header_name() {
             secure: true,
             same_site: SameSite::Lax,
         }),
-        secret_key: get_secret_key(),
+        secret_key: get_secret_key().into(),
         skip_for: vec![],
         enforce_origin: false,
         allowed_origins: vec![],
@@ -314,7 +314,7 @@ async fn custom_config_cookie_name() {
             secure: true,
             same_site: SameSite::Lax,
         }),
-        secret_key: get_secret_key(),
+        secret_key: get_secret_key().into(),
         skip_for: vec![],
         enforce_origin: false,
         allowed_origins: vec![],
@@ -353,7 +353,7 @@ async fn custom_config_form_field_name() {
             secure: true,
             same_site: SameSite::Lax,
         }),
-        secret_key: get_secret_key(),
+        secret_key: get_secret_key().into(),
         skip_for: vec![],
         enforce_origin: false,
         allowed_origins: vec![],

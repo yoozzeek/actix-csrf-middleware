@@ -10,7 +10,7 @@ use actix_web::test;
 use common::*;
 
 fn get_secret_key() -> Vec<u8> {
-    b"super-secret".to_vec()
+    b"super-secret-super-secret-super-secret-xx".to_vec()
 }
 
 async fn case_method_override_bypass<S>(pattern: CsrfPattern, app: &S)

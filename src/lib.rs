@@ -31,6 +31,7 @@ use std::{
     task::{Context, Poll},
 };
 use subtle::ConstantTimeEq;
+use url::Url;
 
 // Strict security defaults for pre-session cookie
 const PRE_SESSION_HTTP_ONLY: bool = true;
@@ -112,7 +113,7 @@ pub struct CsrfMiddlewareConfig {
     pub token_form_field: String,
     pub token_header_name: String,
     pub token_cookie_config: Option<CsrfDoubleSubmitCookie>,
-    pub secret_key: Vec<u8>,
+    pub secret_key: zeroize::Zeroizing<Vec<u8>>,
     pub skip_for: Vec<String>,
     /// Enforce Origin/Referer checks for mutating requests
     pub enforce_origin: bool,
@@ -138,7 +139,7 @@ impl CsrfMiddlewareConfig {
             token_form_field: DEFAULT_CSRF_TOKEN_FIELD.into(),
             token_header_name: DEFAULT_CSRF_TOKEN_HEADER.into(),
             token_cookie_config: None,
-            secret_key: secret_key.into(),
+            secret_key: zeroize::Zeroizing::new(secret_key.into()),
             skip_for: vec![],
             manual_multipart: false,
             enforce_origin: false,
@@ -164,7 +165,7 @@ impl CsrfMiddlewareConfig {
                 secure: true,
                 same_site: SameSite::Strict,
             }),
-            secret_key: secret_key.into(),
+            secret_key: zeroize::Zeroizing::new(secret_key.into()),
             skip_for: vec![],
             manual_multipart: false,
             enforce_origin: false,
@@ -250,7 +251,8 @@ impl<S> CsrfMiddlewareService<S> {
             .map(|c| c.value().to_string())
         {
             // Validate signed/encrypted pre-session value; if invalid, rotate
-            if let Some(pre_id) = decode_pre_session_cookie(&val, self.config.secret_key.as_ref()) {
+            if let Some(pre_id) = decode_pre_session_cookie(&val, self.config.secret_key.as_slice())
+            {
                 (pre_id, false, TokenClass::Anonymous)
             } else {
                 (generate_random_token(), true, TokenClass::Anonymous)
@@ -300,7 +302,7 @@ impl<S> CsrfMiddlewareService<S> {
                 match token {
                     Some(tok) => (tok, false),
                     None => {
-                        let secret = self.config.secret_key.as_ref();
+                        let secret = self.config.secret_key.as_slice();
                         let tok = generate_hmac_token_ctx(
                             ctx,
                             session_id.expect("Session or pre-session id is passed"),
@@ -337,7 +339,7 @@ where
         if self.should_skip_validation(&req) {
             let resp = CsrfResponse {
                 fut: self.service.call(req),
-                config: None,
+                config: Some(self.config.clone()),
                 set_token: None,
                 set_pre_session: None,
                 token_class: None,
@@ -392,14 +394,14 @@ where
         // added to the response when should_set_token flag is set to true.
         if !is_mutating {
             let mut set_token_bytes = if should_set_token {
-                Some(true_token.clone().into_bytes())
+                Some(true_token.clone())
             } else {
                 None
             };
 
             let session_id = if let Some((ref session_id, set_pre_session)) = cookie_session {
                 if set_pre_session {
-                    Some(session_id.clone().into_bytes())
+                    Some(session_id.clone())
                 } else {
                     None
                 }
@@ -417,9 +419,9 @@ where
                         let tok = generate_hmac_token_ctx(
                             TokenClass::Authorized,
                             sess_id,
-                            self.config.secret_key.as_ref(),
+                            self.config.secret_key.as_slice(),
                         );
-                        set_token_bytes = Some(tok.into_bytes());
+                        set_token_bytes = Some(tok);
                     }
                 }
             }
@@ -505,8 +507,8 @@ where
             return Either::left(CsrfTokenValidator::MutatingRequest {
                 service: self.service.clone(),
                 config: self.config.clone(),
-                true_token: true_token.into_bytes(), // TODO Find a way avoid such allocations
-                client_token: token.into_bytes(),
+                true_token,
+                client_token: token,
                 session_id,
                 token_class,
                 req: Some(req),
@@ -516,13 +518,29 @@ where
         // For mutating requests without header token, read body first
         let mut req2 = req;
         let payload = req2.take_payload();
+
+        // Pre-allocate body buffer using Content-Length when available and within limit
+        let initial_capacity = req2
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|hv| hv.to_str().ok())
+            .and_then(|s| s.parse::<usize>().ok())
+            .map(|n| n.min(self.config.max_body_bytes))
+            .unwrap_or(0);
+
+        let body_buf = if initial_capacity > 0 {
+            BytesMut::with_capacity(initial_capacity)
+        } else {
+            BytesMut::new()
+        };
+
         Either::left(CsrfTokenValidator::ReadingBody {
             req: Some(req2),
             payload: Some(payload),
-            body_bytes: BytesMut::new(),
+            body_bytes: body_buf,
             config: self.config.clone(),
             service: self.service.clone(),
-            true_token: true_token.into_bytes(),
+            true_token,
             session_id,
             token_class,
         })
@@ -543,8 +561,8 @@ pin_project! {
         MutatingRequest {
             service: Rc<S>,
             config: Rc<CsrfMiddlewareConfig>,
-            true_token: Vec<u8>,
-            client_token: Vec<u8>,
+            true_token: String,
+            client_token: String,
             session_id: Option<String>,
             token_class: Option<TokenClass>,
             req: Option<ServiceRequest>
@@ -555,7 +573,7 @@ pin_project! {
             req: Option<ServiceRequest>,
             payload: Option<actix_web::dev::Payload>,
             body_bytes: BytesMut,
-            true_token: Vec<u8>,
+            true_token: String,
             session_id: Option<String>,
             token_class: Option<TokenClass>,
         },
@@ -605,7 +623,7 @@ where
                     let valid = match &config.pattern {
                         #[cfg(feature = "actix-session")]
                         CsrfPattern::SynchronizerToken => {
-                            if eq_tokens(true_token, client_token) {
+                            if eq_tokens(true_token.as_bytes(), client_token.as_bytes()) {
                                 true
                             } else {
                                 let alt_valid = {
@@ -620,7 +638,7 @@ where
                                     };
                                     let alt = session.get::<String>(alt_key).ok().flatten();
 
-                                    alt.map(|t| eq_tokens(t.as_bytes(), client_token))
+                                    alt.map(|t| eq_tokens(t.as_bytes(), client_token.as_bytes()))
                                         .unwrap_or(false)
                                 };
 
@@ -637,8 +655,8 @@ where
                                 session_id
                                     .as_deref()
                                     .expect("session id cannot be empty is hmac validation"),
-                                client_token,
-                                config.secret_key.as_ref(),
+                                client_token.as_bytes(),
+                                config.secret_key.as_slice(),
                             )
                             .unwrap_or(false)
                         }
@@ -674,7 +692,7 @@ where
                     let resp = CsrfResponse {
                         fut: service.call(req),
                         config: Some(config.clone()),
-                        set_token: Some(new_token.into_bytes()),
+                        set_token: Some(new_token),
                         set_pre_session: None,
                         token_class: *token_class,
                         remove_pre_session: false,
@@ -754,7 +772,7 @@ where
                             &body,
                             &config.token_form_field,
                         ) {
-                            Some(token) => token.into_bytes(),
+                            Some(token) => token,
                             None => {
                                 let req_owned = req.take().unwrap();
                                 let res = HttpResponse::BadRequest().body("CSRF token is required");
@@ -832,8 +850,8 @@ pin_project! {
         #[pin]
         fut: S::Future,
         config: Option<Rc<CsrfMiddlewareConfig>>,
-        set_token: Option<Vec<u8>>,
-        set_pre_session: Option<Vec<u8>>,
+        set_token: Option<String>,
+        set_pre_session: Option<String>,
         token_class: Option<TokenClass>,
         remove_pre_session: bool,
         _phantom: PhantomData<B>,
@@ -866,10 +884,9 @@ where
                 };
 
                 // Set pre-session if requested
-                if let Some(pre_session_bytes) = this.set_pre_session {
-                    let pre_session_id = std::str::from_utf8(pre_session_bytes)?;
+                if let Some(pre_session_id) = this.set_pre_session {
                     let cookie_val =
-                        encode_pre_session_cookie(pre_session_id, config.secret_key.as_ref());
+                        encode_pre_session_cookie(pre_session_id, config.secret_key.as_slice());
 
                     match resp.response_mut().add_cookie(
                         &Cookie::build(CSRF_PRE_SESSION_KEY, cookie_val)
@@ -943,27 +960,7 @@ where
 
                 // Based on configured pattern, set a new token or rotate
                 // the old one for the service response if pattern is passed.
-                if let Some(token_bytes) = this.set_token.take() {
-                    let new_token = match String::from_utf8(token_bytes) {
-                        Ok(token) => token,
-                        Err(e) => {
-                            let res = HttpResponse::with_body(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "Failed to convert bytes into string in csrf response",
-                            );
-
-                            error!(
-                                "unable to convert token bytes into string in csrf response: {:?}",
-                                e
-                            );
-
-                            return Poll::Ready(Ok(resp
-                                .into_response(res)
-                                .map_into_boxed_body()
-                                .map_into_right_body()));
-                        }
-                    };
-
+                if let Some(new_token) = this.set_token.take() {
                     match config.pattern {
                         #[cfg(feature = "actix-session")]
                         CsrfPattern::SynchronizerToken => {
@@ -1073,14 +1070,33 @@ impl FromRequest for CsrfToken {
     }
 }
 
+/// Extension trait for Actix HttpRequest to rotate
+/// CSRF token without passing the config explicitly.
+pub trait CsrfRequestExt {
+    fn rotate_csrf_token_in_response(&self, resp: &mut HttpResponseBuilder) -> Result<(), Error>;
+}
+
+impl CsrfRequestExt for HttpRequest {
+    fn rotate_csrf_token_in_response(&self, resp: &mut HttpResponseBuilder) -> Result<(), Error> {
+        // Clone out the config to avoid holding an extensions borrow across session access
+        let cfg_rc: Rc<CsrfMiddlewareConfig> =
+            match self.extensions().get::<Rc<CsrfMiddlewareConfig>>() {
+                Some(cfg_rc_ref) => cfg_rc_ref.clone(),
+                None => {
+                    return Err(actix_web::error::ErrorInternalServerError(
+                        "CSRF middleware config not found in request extensions",
+                    ))
+                }
+            };
+
+        rotate_csrf_token_in_response(self, resp, cfg_rc.as_ref())
+    }
+}
+
 pub fn generate_random_token() -> String {
     let mut buf = [0u8; TOKEN_LEN];
     rand::rng().fill_bytes(&mut buf);
     URL_SAFE_NO_PAD.encode(buf)
-}
-
-pub fn eq_tokens(token_a: &[u8], token_b: &[u8]) -> bool {
-    token_a.ct_eq(token_b).unwrap_u8() == 1
 }
 
 pub fn generate_hmac_token_ctx(class: TokenClass, id: &str, secret: &[u8]) -> String {
@@ -1094,6 +1110,10 @@ pub fn generate_hmac_token_ctx(class: TokenClass, id: &str, secret: &[u8]) -> St
 
     let hmac_hex = hex::encode(mac.finalize().into_bytes());
     format!("{}.{}", hmac_hex, tok)
+}
+
+pub fn eq_tokens(token_a: &[u8], token_b: &[u8]) -> bool {
+    token_a.ct_eq(token_b).unwrap_u8() == 1
 }
 
 fn encode_pre_session_cookie(id: &str, secret: &[u8]) -> String {
@@ -1160,29 +1180,6 @@ pub fn validate_hmac_token(session_id: &str, token: &[u8], secret: &[u8]) -> Res
     validate_hmac_token_ctx(TokenClass::Authorized, session_id, token, secret)
 }
 
-/// Extension trait for Actix HttpRequest to rotate
-/// CSRF token without passing the config explicitly.
-pub trait CsrfRequestExt {
-    fn rotate_csrf_token_in_response(&self, resp: &mut HttpResponseBuilder) -> Result<(), Error>;
-}
-
-impl CsrfRequestExt for HttpRequest {
-    fn rotate_csrf_token_in_response(&self, resp: &mut HttpResponseBuilder) -> Result<(), Error> {
-        // Clone out the config to avoid holding an extensions borrow across session access
-        let cfg_rc: Rc<CsrfMiddlewareConfig> =
-            match self.extensions().get::<Rc<CsrfMiddlewareConfig>>() {
-                Some(cfg_rc_ref) => cfg_rc_ref.clone(),
-                None => {
-                    return Err(actix_web::error::ErrorInternalServerError(
-                        "CSRF middleware config not found in request extensions",
-                    ))
-                }
-            };
-
-        rotate_csrf_token_in_response(self, resp, cfg_rc.as_ref())
-    }
-}
-
 pub fn rotate_csrf_token_in_response(
     req: &HttpRequest,
     resp: &mut HttpResponseBuilder,
@@ -1228,7 +1225,7 @@ pub fn rotate_csrf_token_in_response(
             let token = generate_hmac_token_ctx(
                 TokenClass::Authorized,
                 &session_id,
-                config.secret_key.as_ref(),
+                config.secret_key.as_slice(),
             );
 
             let (http_only, secure, same_site) = match &config.token_cookie_config {
@@ -1258,10 +1255,8 @@ pub fn rotate_csrf_token_in_response(
 }
 
 fn check_secret_key(secret_key: &[u8]) {
-    if secret_key.len() < 16 {
-        warn!("csrf secret_key is too short (<16 bytes). Use at least 32 bytes for production.");
-    } else if secret_key.len() < 32 {
-        warn!("csrf secret_key is shorter than 32 bytes; recommend >=32 bytes.");
+    if secret_key.len() < 32 {
+        panic!("csrf secret_key too short: require >=32 bytes");
     }
 }
 
@@ -1274,19 +1269,41 @@ fn origin_allowed(headers: &HeaderMap, cfg: &CsrfMiddlewareConfig) -> bool {
         return false;
     }
 
-    // Try Origin header first
+    // Helper to compare origins strictly (scheme, host, port)
+    let is_allowed_origin = |u: &Url| -> bool {
+        cfg.allowed_origins.iter().any(|allowed| {
+            if let Ok(au) = Url::parse(allowed) {
+                au.scheme() == u.scheme()
+                    && au.host_str() == u.host_str()
+                    && au.port_or_known_default() == u.port_or_known_default()
+            } else {
+                false
+            }
+        })
+    };
+
+    // Try Origin header first (preferred)
     if let Some(origin) = headers.get(header::ORIGIN).and_then(|hv| hv.to_str().ok()) {
-        if cfg.allowed_origins.iter().any(|o| o == origin) {
-            return true;
+        if let Ok(u) = Url::parse(origin) {
+            return is_allowed_origin(&u);
         }
 
         return false;
     }
 
-    // Fallback requires it starts with allowed origin
+    // Fallback: Referer header, use its origin
     if let Some(referer) = headers.get(header::REFERER).and_then(|hv| hv.to_str().ok()) {
-        if cfg.allowed_origins.iter().any(|o| referer.starts_with(o)) {
-            return true;
+        if let Ok(u) = Url::parse(referer) {
+            let origin = format!(
+                "{}://{}{}",
+                u.scheme(),
+                u.host_str().unwrap_or(""),
+                u.port().map(|p| format!(":{}", p)).unwrap_or_default()
+            );
+
+            if let Ok(o) = Url::parse(&origin) {
+                return is_allowed_origin(&o);
+            }
         }
 
         return false;

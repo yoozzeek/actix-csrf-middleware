@@ -49,7 +49,7 @@ async fn auth_handler(req: HttpRequest) -> actix_web::Result<HttpResponse> {
 }
 
 fn get_secret_key() -> Vec<u8> {
-    b"ext-secret".to_vec()
+    b"ext-secret-ext-secret-ext-secret-123456".to_vec()
 }
 
 #[actix_web::test]

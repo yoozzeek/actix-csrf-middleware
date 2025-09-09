@@ -7,25 +7,16 @@ use actix_csrf_middleware::{
 use actix_web::{http::StatusCode, test};
 use common::*;
 
-/// Test weak secret key handling
 #[actix_web::test]
 async fn test_weak_secret_key_detection() {
-    // Test with extremely weak secret key
-    let weak_key = b"1"; // Single character
-    let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(weak_key)).await;
-
-    let (_token, token_cookie, session_cookie) = token_cookie(&app, None, None).await;
-
-    // The middleware should still work but this highlights the need for strong keys
-    let req = test::TestRequest::post()
-        .uri("/submit")
-        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, _token))
-        .cookie(token_cookie)
-        .cookie(session_cookie)
-        .to_request();
-
-    let resp = test::call_service(&app, req).await;
-    assert!(resp.status().is_success()); // Works but insecure
+    // Extremely weak secret key must cause constructor to panic
+    let result = std::panic::catch_unwind(|| {
+        let _ = CsrfMiddlewareConfig::double_submit_cookie(b"1");
+    });
+    assert!(
+        result.is_err(),
+        "config constructor must panic on short secret"
+    );
 }
 
 /// Test for predictable token generation
@@ -123,21 +114,17 @@ async fn test_token_format_information_disclosure() {
     );
 }
 
-/// Test empty or null secret key handling
-#[test]
+/// Test empty or null secret key handling for pure HMAC helpers (allowed)
+#[actix_web::test]
 async fn test_empty_secret_key_handling() {
     let empty_key = b"";
     let session_id = "test_session";
 
-    // Should handle empty key gracefully
+    // Pure helper must operate (we enforce secret length only at middleware config level)
     let token = generate_hmac_token_ctx(TokenClass::Authorized, session_id, empty_key);
     let validation = validate_hmac_token(session_id, token.as_bytes(), empty_key);
 
-    // Should still work but is cryptographically weak
-    assert!(
-        validation.unwrap_or(false),
-        "Empty key should still validate but is insecure"
-    );
+    assert!(validation.unwrap_or(false));
 }
 
 /// Test malformed token injection attempts
@@ -175,7 +162,7 @@ async fn test_malformed_token_injection() {
 }
 
 fn get_secret_key() -> Vec<u8> {
-    b"super-secret".to_vec()
+    b"crypto-failures-secret-32bytes-minimum-xx".to_vec()
 }
 
 pub async fn token_cookie<S>(

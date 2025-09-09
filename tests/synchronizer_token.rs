@@ -13,7 +13,7 @@ use actix_web::test;
 use common::*;
 
 fn get_secret_key() -> Vec<u8> {
-    b"super-secret".to_vec()
+    b"super-secret-super-secret-super-secret-xx".to_vec()
 }
 
 pub async fn token_cookie<S>(
@@ -141,7 +141,7 @@ async fn custom_config_header_name() {
         token_form_field: "myfield".to_string(),
         token_header_name: HEADER_NAME.to_string(),
         token_cookie_config: None,
-        secret_key: get_secret_key(),
+        secret_key: get_secret_key().into(),
         skip_for: vec![],
         enforce_origin: false,
         allowed_origins: vec![],
@@ -174,7 +174,7 @@ async fn custom_config_cookie_name() {
         token_form_field: DEFAULT_CSRF_TOKEN_FIELD.to_string(),
         token_header_name: DEFAULT_CSRF_TOKEN_HEADER.to_string(),
         token_cookie_config: None,
-        secret_key: get_secret_key(),
+        secret_key: get_secret_key().into(),
         skip_for: vec![],
         enforce_origin: false,
         allowed_origins: vec![],
@@ -207,7 +207,7 @@ async fn custom_config_form_field_name() {
         token_form_field: FIELD_NAME.to_string(),
         token_header_name: "myheader".to_string(),
         token_cookie_config: None,
-        secret_key: get_secret_key(),
+        secret_key: get_secret_key().into(),
         skip_for: vec![],
         enforce_origin: false,
         allowed_origins: vec![],

@@ -8,7 +8,7 @@ use serde_json::json;
 use common::*;
 
 fn get_secret_key() -> Vec<u8> {
-    b"super-secret".to_vec()
+    b"super-secret-super-secret-super-secret-xx".to_vec()
 }
 
 async fn case_sql_injection_in_csrf_token<S>(pattern: CsrfPattern, app: &S)

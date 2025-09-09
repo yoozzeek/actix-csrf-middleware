@@ -12,7 +12,7 @@ use common::token_and_cookies_for;
 use serde_json::json;
 
 fn get_secret_key() -> Vec<u8> {
-    b"param-secret".to_vec()
+    b"param-secret-param-secret-param-secret-1234".to_vec()
 }
 
 async fn case_valid_header<S>(pattern: CsrfPattern, app: &S)
