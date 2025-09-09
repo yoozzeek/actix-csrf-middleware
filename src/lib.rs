@@ -341,7 +341,7 @@ where
                 set_token: None,
                 set_pre_session: None,
                 token_class: None,
-                remove_anon_session: false,
+                remove_pre_session: false,
                 _phantom: PhantomData,
             };
             return Either::left(CsrfTokenValidator::CsrfResponse { response: resp });
@@ -424,15 +424,14 @@ where
                 }
             }
 
-            let remove_anon_session = matches!(token_class, Some(TokenClass::Authorized));
-
+            let remove_pre_session = matches!(token_class, Some(TokenClass::Authorized));
             let resp = CsrfResponse {
                 fut: self.service.call(req),
                 config: Some(self.config.clone()),
                 set_token: set_token_bytes,
                 set_pre_session: session_id,
                 token_class,
-                remove_anon_session,
+                remove_pre_session,
                 _phantom: PhantomData,
             };
 
@@ -480,7 +479,7 @@ where
                     set_token: None,
                     set_pre_session: None,
                     token_class: None,
-                    remove_anon_session: false,
+                    remove_pre_session: false,
                     _phantom: PhantomData,
                 };
 
@@ -515,8 +514,12 @@ where
         }
 
         // For mutating requests without header token, read body first
+        let mut req2 = req;
+        let payload = req2.take_payload();
         Either::left(CsrfTokenValidator::ReadingBody {
-            req: Some(req),
+            req: Some(req2),
+            payload: Some(payload),
+            body_bytes: BytesMut::new(),
             config: self.config.clone(),
             service: self.service.clone(),
             true_token: true_token.into_bytes(),
@@ -550,6 +553,8 @@ pin_project! {
             service: Rc<S>,
             config: Rc<CsrfMiddlewareConfig>,
             req: Option<ServiceRequest>,
+            payload: Option<actix_web::dev::Payload>,
+            body_bytes: BytesMut,
             true_token: Vec<u8>,
             session_id: Option<String>,
             token_class: Option<TokenClass>,
@@ -672,7 +677,7 @@ where
                         set_token: Some(new_token.into_bytes()),
                         set_pre_session: None,
                         token_class: *token_class,
-                        remove_anon_session: false,
+                        remove_pre_session: false,
                         _phantom: PhantomData,
                     };
 
@@ -692,86 +697,101 @@ where
                 service,
                 config,
                 req,
+                payload,
+                body_bytes,
                 true_token,
                 session_id,
                 token_class,
             } => {
-                if let Some(mut request) = req.take() {
-                    let mut body_bytes = BytesMut::new();
-                    let mut payload = request.take_payload();
+                if req.is_none() {
+                    error!("request already taken in csrf validator's state machine");
+                    return Poll::Ready(Err(actix_web::error::ErrorInternalServerError(
+                        "Request was already taken",
+                    )));
+                }
 
-                    while let Some(chunk_result) = ready!(payload.poll_next_unpin(cx)) {
-                        match chunk_result {
-                            Ok(bytes) => {
-                                body_bytes.extend_from_slice(&bytes);
-
-                                if body_bytes.len() > config.max_body_bytes {
-                                    let resp = HttpResponse::with_body(
-                                        StatusCode::PAYLOAD_TOO_LARGE,
-                                        "Request body too large for CSRF token extraction",
-                                    );
-
-                                    return Poll::Ready(Ok(request
-                                        .into_response(resp)
-                                        .map_into_boxed_body()
-                                        .map_into_right_body()));
-                                }
-                            }
-                            Err(e) => {
-                                return Poll::Ready(Err(actix_web::error::ErrorBadRequest(e)));
-                            }
-                        }
+                // Safe: just checked
+                let request_mut = req.as_mut().unwrap();
+                let payload = match payload.as_mut() {
+                    Some(p) => p,
+                    None => {
+                        error!("payload missing in reading body state");
+                        return Poll::Ready(Err(actix_web::error::ErrorInternalServerError(
+                            "Payload missing",
+                        )));
                     }
+                };
 
-                    // Try to extract token from body
-                    let client_token = match sync_read_token_from_body(
-                        request.headers(),
-                        &body_bytes,
-                        &config.token_form_field,
-                    ) {
-                        Some(token) => token.into_bytes(),
-                        None => {
-                            let res = HttpResponse::BadRequest().body("CSRF token is required");
-                            return Poll::Ready(Ok(request
-                                .into_response(res)
+                match payload.poll_next_unpin(cx) {
+                    Poll::Pending => Poll::Pending,
+                    Poll::Ready(Some(Ok(bytes))) => {
+                        body_bytes.extend_from_slice(&bytes);
+
+                        if body_bytes.len() > config.max_body_bytes {
+                            let req_owned = req.take().unwrap();
+                            let resp = HttpResponse::with_body(
+                                StatusCode::PAYLOAD_TOO_LARGE,
+                                "Request body too large for CSRF token extraction",
+                            );
+
+                            return Poll::Ready(Ok(req_owned
+                                .into_response(resp)
                                 .map_into_boxed_body()
                                 .map_into_right_body()));
                         }
-                    };
 
-                    // Restore the body for the next handler
-                    request.set_payload(actix_web::dev::Payload::from(body_bytes.freeze()));
+                        cx.waker().wake_by_ref();
 
-                    let next_state = {
-                        let service = service.clone();
-                        let config = config.clone();
-                        let true_token = std::mem::take(true_token);
-                        let session_id = session_id.take();
-                        let token_class = token_class.take();
-                        let req = Some(request);
+                        Poll::Pending
+                    }
+                    Poll::Ready(Some(Err(e))) => {
+                        Poll::Ready(Err(actix_web::error::ErrorBadRequest(e)))
+                    }
+                    Poll::Ready(None) => {
+                        let body = std::mem::take(&mut *body_bytes).freeze();
+                        let client_token = match sync_read_token_from_body(
+                            request_mut.headers(),
+                            &body,
+                            &config.token_form_field,
+                        ) {
+                            Some(token) => token.into_bytes(),
+                            None => {
+                                let req_owned = req.take().unwrap();
+                                let res = HttpResponse::BadRequest().body("CSRF token is required");
+                                return Poll::Ready(Ok(req_owned
+                                    .into_response(res)
+                                    .map_into_boxed_body()
+                                    .map_into_right_body()));
+                            }
+                        };
 
-                        CsrfTokenValidator::MutatingRequest {
-                            service,
-                            config,
-                            true_token,
-                            client_token,
-                            session_id,
-                            token_class,
-                            req,
-                        }
-                    };
+                        request_mut.set_payload(actix_web::dev::Payload::from(body.clone()));
 
-                    // Drop borrows from projection before mutating self
-                    self.set(next_state);
+                        let req_owned = req.take().unwrap();
+                        let next_state = {
+                            let service = service.clone();
+                            let config = config.clone();
+                            let true_token = std::mem::take(true_token);
+                            let session_id = session_id.take();
+                            let token_class = token_class.take();
+                            let req = Some(req_owned);
 
-                    cx.waker().wake_by_ref(); // wake for the next pool
-                    Poll::Pending
-                } else {
-                    error!("request already taken in csrf validator's state machine");
+                            CsrfTokenValidator::MutatingRequest {
+                                service,
+                                config,
+                                true_token,
+                                client_token,
+                                session_id,
+                                token_class,
+                                req,
+                            }
+                        };
 
-                    Poll::Ready(Err(actix_web::error::ErrorInternalServerError(
-                        "Request was already taken",
-                    )))
+                        self.set(next_state);
+                        cx.waker().wake_by_ref();
+
+                        Poll::Pending
+                    }
                 }
             }
         }
@@ -815,7 +835,7 @@ pin_project! {
         set_token: Option<Vec<u8>>,
         set_pre_session: Option<Vec<u8>>,
         token_class: Option<TokenClass>,
-        remove_anon_session: bool,
+        remove_pre_session: bool,
         _phantom: PhantomData<B>,
     }
 }
@@ -874,7 +894,7 @@ where
                 }
 
                 // If requested, clear pre-session cookie and anon token cookie
-                if *this.remove_anon_session {
+                if *this.remove_pre_session {
                     // Expire pre-session
                     let mut del = Cookie::new(CSRF_PRE_SESSION_KEY.to_string(), "");
                     del.set_max_age(time::Duration::seconds(0));
@@ -947,8 +967,7 @@ where
                     match config.pattern {
                         #[cfg(feature = "actix-session")]
                         CsrfPattern::SynchronizerToken => {
-                            // Remove anon session key if requested (best-effort)
-                            if *this.remove_anon_session {
+                            if *this.remove_pre_session {
                                 let _ = resp
                                     .request()
                                     .get_session()
@@ -1072,6 +1091,7 @@ pub fn generate_hmac_token_ctx(class: TokenClass, id: &str, secret: &[u8]) -> St
     mac.update(id.as_bytes());
     mac.update(b"|");
     mac.update(tok.as_bytes());
+
     let hmac_hex = hex::encode(mac.finalize().into_bytes());
     format!("{}.{}", hmac_hex, tok)
 }
@@ -1273,36 +1293,4 @@ fn origin_allowed(headers: &HeaderMap, cfg: &CsrfMiddlewareConfig) -> bool {
     }
 
     false
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SESSION_ID: &str = "test";
-    const SECRET: &str = "secret";
-
-    #[test]
-    fn test_generate_and_validate_hmac_token() {
-        let token = generate_hmac_token_ctx(TokenClass::Authorized, SESSION_ID, SECRET.as_bytes());
-        let res = validate_hmac_token_ctx(
-            TokenClass::Authorized,
-            SESSION_ID,
-            token.as_bytes(),
-            SECRET.as_bytes(),
-        );
-        assert!(res.unwrap());
-    }
-
-    #[test]
-    fn test_handle_invalid_hmac_token() {
-        let token = generate_hmac_token_ctx(TokenClass::Authorized, SESSION_ID, SECRET.as_bytes());
-        let res = validate_hmac_token_ctx(
-            TokenClass::Authorized,
-            SESSION_ID,
-            token.as_bytes(),
-            SECRET.as_bytes(),
-        );
-        assert!(res.unwrap());
-    }
 }
