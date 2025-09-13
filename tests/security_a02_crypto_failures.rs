@@ -155,8 +155,7 @@ async fn test_malformed_token_injection() {
         assert_eq!(
             resp.status(),
             StatusCode::BAD_REQUEST,
-            "Malformed token '{}' should be rejected",
-            malformed_token
+            "Malformed token '{malformed_token}' should be rejected"
         );
     }
 }

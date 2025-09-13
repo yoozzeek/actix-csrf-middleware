@@ -1,17 +1,24 @@
 mod common;
 
+use actix_csrf_middleware::DEFAULT_SESSION_ID_KEY;
+#[cfg(feature = "actix-session")]
 use actix_csrf_middleware::{
     CsrfMiddlewareConfig, CsrfPattern, DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_FIELD,
-    DEFAULT_CSRF_TOKEN_HEADER, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY,
+    DEFAULT_CSRF_TOKEN_HEADER, DEFAULT_CSRF_TOKEN_KEY,
 };
 use actix_http::body::{BoxBody, EitherBody};
-use actix_http::{Request, StatusCode};
+use actix_http::Request;
+#[cfg(feature = "actix-session")]
+use actix_http::StatusCode;
 use actix_web::cookie::Cookie;
 use actix_web::dev::{Service, ServiceResponse};
+#[cfg(feature = "actix-session")]
 use actix_web::http::header::ContentType;
 use actix_web::test;
+#[cfg(feature = "actix-session")]
 use common::*;
 
+#[cfg(feature = "actix-session")]
 fn get_secret_key() -> Vec<u8> {
     b"super-secret-super-secret-super-secret-xx".to_vec()
 }
@@ -216,7 +223,7 @@ async fn custom_config_form_field_name() {
     let app = build_app(cfg).await;
     let (token, token_cookie) = { token_cookie_auth(&app, None).await };
 
-    let form = format!("{}={}", FIELD_NAME, &token);
+    let form = format!("{FIELD_NAME}={token}");
     let req = test::TestRequest::post()
         .uri("/submit")
         .cookie(token_cookie)

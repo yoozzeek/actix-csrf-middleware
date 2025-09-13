@@ -419,11 +419,11 @@ async fn token_should_be_unforgeable() {
 
     let tok = generate_random_token();
     let mut mac = HmacSha256::new_from_slice(HMAC_SECRET).expect("HMAC can take key of any size");
-    let message = format!("{}|{}|{}", "auth", "HOW-TO-GET-SESSION-ID?=)", tok);
+    let message = format!("auth|HOW-TO-GET-SESSION-ID?=)|{tok}");
     mac.update(message.as_bytes());
 
     let hmac_hex = hex::encode(mac.finalize().into_bytes());
-    let forged_token = format!("{}.{}", hmac_hex, tok);
+    let forged_token = format!("{hmac_hex}.{tok}");
 
     let req = test::TestRequest::post()
         .uri("/submit")
