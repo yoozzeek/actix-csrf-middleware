@@ -66,8 +66,30 @@ const TOKEN_LEN: usize = 32; // 32 bytes -> 256 bits
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Classification of CSRF tokens by context.
+///
+/// - [`TokenClass::Anonymous`]: Token associated with a pre-session (not yet authenticated).
+/// - [`TokenClass::Authorized`]: Token bound to an authenticated session.
+///
+/// This distinction helps prevent accidental mixing of tokens. For example, an
+/// anonymous token must not be accepted on endpoints that require an authenticated
+/// session.
+///
+/// # Examples
+/// Choosing the correct class when generating HMAC tokens:
+/// ```
+/// use actix_csrf_middleware::{generate_hmac_token_ctx, validate_hmac_token_ctx, TokenClass};
+///
+/// let secret = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+/// let session_id = "SID-42";
+/// let t = generate_hmac_token_ctx(TokenClass::Authorized, session_id, secret);
+///
+/// assert!(validate_hmac_token_ctx(TokenClass::Authorized, session_id, t.as_bytes(), secret).unwrap());
+/// ```
 pub enum TokenClass {
+    /// Token used before authentication.
     Anonymous,
+    /// Token used after authentication; tied to a session id.
     Authorized,
 }
 
@@ -80,25 +102,93 @@ impl TokenClass {
     }
 }
 
-/// `CsrfPattern` allows use to configure `CsrfMiddleware` to read and store csrf tokens and
-/// user sessions in client's browser cookie or in any persistent storage like Redis,
-/// Postgres or in-memory that implements `actix_session::storage::SessionStore` trait if
-/// you have enabled `session` feature.
+/// CSRF defense patterns supported by [`CsrfMiddleware`].
+///
+/// - [`CsrfPattern::DoubleSubmitCookie`]: Stores an HMAC-protected token in a cookie and
+///   expects the client to echo it back via header or form/json field. Does not require
+///   server-side session storage.
+/// - [`CsrfPattern::SynchronizerToken`]: Stores a random token server-side in a session
+///   (requires `actix-session`) and expects the client to send back the same value.
+///
+/// See [`CsrfMiddlewareConfig`] constructors for examples.
 #[derive(Clone, PartialEq)]
 pub enum CsrfPattern {
+    /// Store tokens server-side in session storage (requires `actix-session`)
     #[cfg(feature = "actix-session")]
     SynchronizerToken,
+    /// Store tokens client-side in cookies and verify with HMAC
     DoubleSubmitCookie,
 }
 
 #[derive(Clone)]
+/// Cookie flags for tokens when using the Double-Submit Cookie pattern.
+///
+/// - `http_only`: Must be `false` so client code can read the token and mirror it into a
+///   header or form field.
+/// - `secure`: Should be `true` in production to restrict cookies to HTTPS.
+/// - `same_site`: Choose `Strict` or `Lax` depending on your cross-site needs.
+///
+/// # Examples
+/// ```
+/// use actix_csrf_middleware::{CsrfMiddlewareConfig, CsrfDoubleSubmitCookie};
+/// use actix_web::cookie::SameSite;
+///
+/// let secret = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+/// let cfg = CsrfMiddlewareConfig::double_submit_cookie(secret)
+///     .with_token_cookie_config(CsrfDoubleSubmitCookie {
+///         http_only: false,
+///         secure: true,
+///         same_site: SameSite::Strict,
+///     });
+/// ```
 pub struct CsrfDoubleSubmitCookie {
+    /// If true, JavaScript cannot read the cookie
     pub http_only: bool,
+    /// Restrict cookies to HTTPS in production
     pub secure: bool,
+    /// SameSite policy controlling cross-site cookie sending
     pub same_site: SameSite,
 }
 
 #[derive(Clone)]
+/// Configuration for [`CsrfMiddleware`].
+///
+/// Choose a CSRF defense pattern and adjust behavior such as token locations, cookie
+/// names, content-type handling, and origin checks.
+///
+/// - For the Double-Submit Cookie pattern, use [`CsrfMiddlewareConfig::double_submit_cookie`].
+/// - For the Synchronizer Token pattern (requires the `actix-session` feature), use
+///   [`CsrfMiddlewareConfig::synchronizer_token`].
+///
+/// # Defaults
+/// - Token header: [`DEFAULT_CSRF_TOKEN_HEADER`]
+/// - Token form/json field: [`DEFAULT_CSRF_TOKEN_FIELD`]
+/// - Session id cookie name: [`DEFAULT_SESSION_ID_KEY`]
+/// - Max body bytes to scan for token: 2 MiB
+///
+/// # Security
+/// - When using Double-Submit Cookie, ensure the token cookie is readable by the client
+///   (i.e., `http_only` must be `false`) so it can be mirrored into the header.
+/// - Consider enabling strict Origin/Referer enforcement with
+///   [`with_enforce_origin`](Self::with_enforce_origin) to mitigate CSRF even if a token
+///   leaks.
+/// - Avoid allowing `multipart/form-data` unless you can handle token extraction manually.
+///
+/// # Examples
+/// Basic Double-Submit Cookie configuration:
+/// ```
+/// use actix_csrf_middleware::{CsrfMiddlewareConfig, CsrfDoubleSubmitCookie};
+/// use actix_web::cookie::SameSite;
+///
+/// let secret = b"at-least-32-bytes-of-secret-key-material...";
+/// let cfg = CsrfMiddlewareConfig::double_submit_cookie(secret)
+///     .with_enforce_origin(true, vec!["https://example.com".to_string()])
+///     .with_token_cookie_config(CsrfDoubleSubmitCookie {
+///         http_only: false, // must be false for Double-Submit
+///         secure: true,
+///         same_site: SameSite::Lax,
+///     });
+/// ```
 pub struct CsrfMiddlewareConfig {
     pub pattern: CsrfPattern,
     pub manual_multipart: bool,
@@ -126,6 +216,24 @@ pub struct CsrfMiddlewareConfig {
 
 impl CsrfMiddlewareConfig {
     #[cfg(feature = "actix-session")]
+    /// Constructs a configuration for the Synchronizer Token pattern.
+    ///
+    /// Tokens are stored server-side in the session via `actix-session` and compared against
+    /// the value presented by the client.
+    ///
+    /// # Examples
+    /// Using cookie-based sessions (requires enabling the `actix-session` feature for this crate):
+    /// ```ignore
+    /// use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig};
+    /// use actix_session::{SessionMiddleware, storage::CookieSessionStore};
+    /// use actix_web::{App, cookie::Key};
+    ///
+    /// let secret = b"a-very-long-application-secret-key-of-32+bytes";
+    /// let cfg = CsrfMiddlewareConfig::synchronizer_token(secret);
+    /// let app = App::new()
+    ///     .wrap(SessionMiddleware::new(CookieSessionStore::default(), Key::generate()))
+    ///     .wrap(CsrfMiddleware::new(cfg));
+    /// ```
     pub fn synchronizer_token(secret_key: &[u8]) -> Self {
         check_secret_key(secret_key);
 
@@ -148,6 +256,20 @@ impl CsrfMiddlewareConfig {
         }
     }
 
+    /// Constructs a configuration for the Double-Submit Cookie pattern.
+    ///
+    /// The CSRF token is placed in a cookie and echoed by clients in a header or form field.
+    /// The token’s integrity is protected by an HMAC bound to the session id and the token.
+    ///
+    /// # Examples
+    /// ```
+    /// use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig};
+    /// use actix_web::{App};
+    ///
+    /// let secret = b"a-very-long-application-secret-key-of-32+bytes";
+    /// let cfg = CsrfMiddlewareConfig::double_submit_cookie(secret);
+    /// let app = App::new().wrap(CsrfMiddleware::new(cfg));
+    /// ```
     pub fn double_submit_cookie(secret_key: &[u8]) -> Self {
         check_secret_key(secret_key);
 
@@ -174,26 +296,55 @@ impl CsrfMiddlewareConfig {
         }
     }
 
+    /// Controls whether `multipart/form-data` requests are allowed to pass through.
+    ///
+    /// When set to `true`, the middleware does not attempt to extract the CSRF token from a
+    /// multipart body. Your handler must read and validate the token manually.
+    ///
+    /// Defaults to `false` for safety.
     pub fn with_multipart(mut self, multipart: bool) -> Self {
         self.manual_multipart = multipart;
         self
     }
 
+    /// Sets the maximum number of request body bytes read when searching for a CSRF token
+    /// in JSON or `application/x-www-form-urlencoded` bodies.
+    ///
+    /// Defaults to 2 MiB.
     pub fn with_max_body_bytes(mut self, limit: usize) -> Self {
         self.max_body_bytes = limit;
         self
     }
 
+    /// Overrides cookie flags for token cookies (Double-Submit Cookie pattern).
+    ///
+    /// For Double-Submit Cookie, `http_only` must be `false` so client-side code can read
+    /// the cookie value and mirror it into a header or form field.
     pub fn with_token_cookie_config(mut self, config: CsrfDoubleSubmitCookie) -> Self {
         self.token_cookie_config = Some(config);
         self
     }
 
+    /// Skips CSRF validation for requests whose path starts with any of the given prefixes.
+    ///
+    /// Useful for health checks or public webhooks where CSRF is not applicable.
     pub fn with_skip_for(mut self, patches: Vec<String>) -> Self {
         self.skip_for = patches;
         self
     }
 
+    /// Enables strict Origin/Referer checks for mutating requests and sets the allowed origins.
+    ///
+    /// Origins are compared strictly by scheme, host, and port. If `allowed` is empty and
+    /// `enforce` is `true`, all mutating requests are rejected.
+    ///
+    /// Example enabling enforcement for a single origin:
+    /// ```
+    /// use actix_csrf_middleware::CsrfMiddlewareConfig;
+    ///
+    /// let cfg = CsrfMiddlewareConfig::double_submit_cookie(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    ///     .with_enforce_origin(true, vec!["https://example.com".to_string()]);
+    /// ```
     pub fn with_enforce_origin(mut self, enforce: bool, allowed: Vec<String>) -> Self {
         self.enforce_origin = enforce;
         self.allowed_origins = allowed;
@@ -201,11 +352,66 @@ impl CsrfMiddlewareConfig {
     }
 }
 
+/// Actix Web middleware providing CSRF protection.
+///
+/// Supports two patterns:
+/// - Double-Submit Cookie (default): a token is stored in a cookie and echoed by the client.
+/// - Synchronizer Token (with `actix-session`): a token is stored server-side in the session.
+///
+/// # How It Works
+/// - For safe methods (GET/HEAD), the middleware ensures a token exists and may set it in
+///   cookies. For the Double-Submit Cookie pattern, an anonymous pre-session cookie may be
+///   issued before the user is authenticated.
+/// - For mutating methods (POST/PUT/PATCH/DELETE), a token is required. The middleware
+///   accepts tokens from the header [`DEFAULT_CSRF_TOKEN_HEADER`] or the body field
+///   [`DEFAULT_CSRF_TOKEN_FIELD`] for JSON or url-encoded bodies. `multipart/form-data`
+///   is rejected unless [`CsrfMiddlewareConfig::with_multipart`] is enabled.
+/// - On successful validation, the token is rotated.
+/// - Optional strict Origin/Referer checks can be enabled via
+///   [`CsrfMiddlewareConfig::with_enforce_origin`].
+///
+/// # Examples
+/// Double-Submit Cookie (no session middleware required):
+/// ```
+/// use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken};
+/// use actix_web::{web, App, HttpResponse};
+///
+/// let secret = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; // >= 32 bytes
+/// let cfg = CsrfMiddlewareConfig::double_submit_cookie(secret);
+///
+/// let app = App::new()
+///     .wrap(CsrfMiddleware::new(cfg))
+///     .service(
+///         web::resource("/form").route(web::get().to(|csrf: CsrfToken| async move {
+///             Ok::<_, actix_web::Error>(HttpResponse::Ok().body(format!("token:{}", csrf.0)))
+///         }))
+///     )
+///     .service(
+///         web::resource("/submit").route(web::post().to(|_csrf: CsrfToken| async move {
+///             Ok::<_, actix_web::Error>(HttpResponse::Ok())
+///         }))
+///     );
+/// ```
+///
+/// Synchronizer Token (requires `actix-session`) example:
+/// ```ignore
+/// use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig};
+/// use actix_session::{storage::CookieSessionStore, SessionMiddleware};
+/// use actix_web::{App, cookie::Key};
+///
+/// let cfg = CsrfMiddlewareConfig::synchronizer_token(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+/// let app = App::new()
+///     .wrap(SessionMiddleware::new(CookieSessionStore::default(), Key::generate()))
+///     .wrap(CsrfMiddleware::new(cfg));
+/// ```
 pub struct CsrfMiddleware {
     config: Rc<CsrfMiddlewareConfig>,
 }
 
 impl CsrfMiddleware {
+    /// Creates a CSRF middleware instance with the given configuration.
+    ///
+    /// See [`CsrfMiddlewareConfig`] for available options and examples.
     pub fn new(config: CsrfMiddlewareConfig) -> Self {
         Self {
             config: Rc::new(config),
@@ -599,6 +805,9 @@ where
                 token_class,
                 req,
             } => {
+                #[cfg(not(feature = "actix-session"))]
+                let _ = &true_token;
+
                 if let Some(req) = req.take() {
                     // Session id cannot be empty with DoubleSubmitCookie pattern
                     let session_id = if config.pattern == CsrfPattern::DoubleSubmitCookie {
@@ -901,7 +1110,7 @@ where
                             let res = HttpResponse::InternalServerError()
                                 .body("Unable to set pre-session cookie");
 
-                            error!("unable to set pre-session cookie in csrf response: {:?}", e);
+                            error!("unable to set pre-session cookie in csrf response: {e:?}");
                             return Poll::Ready(Ok(resp
                                 .into_response(res)
                                 .map_into_boxed_body()
@@ -925,10 +1134,7 @@ where
                         let res = HttpResponse::InternalServerError()
                             .body("Failed to expire pre-session cookie");
 
-                        error!(
-                            "unable to expire pre-session cookie in csrf response: {:?}",
-                            e
-                        );
+                        error!("unable to expire pre-session cookie in csrf response: {e:?}");
                         return Poll::Ready(Ok(resp
                             .into_response(res)
                             .map_into_boxed_body()
@@ -946,10 +1152,7 @@ where
                             let res = HttpResponse::InternalServerError()
                                 .body("Failed to expire anon token cookie");
 
-                            error!(
-                                "unable to expire anon token cookie in csrf response: {:?}",
-                                e
-                            );
+                            error!("unable to expire anon token cookie in csrf response: {e:?}");
                             return Poll::Ready(Ok(resp
                                 .into_response(res)
                                 .map_into_boxed_body()
@@ -1032,10 +1235,7 @@ where
                                     let res = HttpResponse::InternalServerError()
                                         .body("Failed to set a new csrf token");
 
-                                    error!(
-                                        "unable to set a token cookie in csrf response: {:?}",
-                                        e
-                                    );
+                                    error!("unable to set a token cookie in csrf response: {e:?}");
                                     return Poll::Ready(Ok(resp
                                         .into_response(res)
                                         .map_into_boxed_body()
@@ -1054,6 +1254,26 @@ where
 }
 
 #[derive(Clone)]
+/// Extractor for the current CSRF token.
+///
+/// - On safe requests (GET/HEAD), ensures a token exists and makes it available to handlers.
+/// - On mutating requests (POST/PUT/PATCH/DELETE), extracting [`CsrfToken`] verifies the
+///   token before your handler is called; if verification fails, the request is rejected and
+///   your handler is not executed.
+///
+/// # Examples
+/// Read the token in a form-rendering handler and embed it into HTML or a JSON response.
+/// ```
+/// use actix_csrf_middleware::CsrfToken;
+/// use actix_web::{HttpResponse, Responder};
+///
+/// async fn form(csrf: CsrfToken) -> impl Responder {
+///     HttpResponse::Ok().body(format!("token:{}", csrf.0))
+/// }
+/// ```
+///
+/// Note: Using this extractor requires the middleware to be installed via
+/// [`CsrfMiddleware::new`]. If not configured, extraction will fail with an internal error.
 pub struct CsrfToken(pub String);
 
 impl FromRequest for CsrfToken {
@@ -1070,9 +1290,27 @@ impl FromRequest for CsrfToken {
     }
 }
 
-/// Extension trait for Actix HttpRequest to rotate
-/// CSRF token without passing the config explicitly.
+/// Extension trait for Actix [`HttpRequest`] to rotate the CSRF token in a response.
+///
+/// This is a convenience wrapper around [`rotate_csrf_token_in_response`], allowing you to
+/// rotate tokens without passing configuration explicitly. Typical use-cases include
+/// rotating the token immediately after login or privilege escalation.
+///
+/// # Examples
+/// Rotate after a successful login:
+/// ```
+/// use actix_csrf_middleware::CsrfRequestExt;
+/// use actix_web::{HttpRequest, HttpResponse};
+///
+/// async fn after_login(req: HttpRequest) -> actix_web::Result<HttpResponse> {
+///     let mut resp = HttpResponse::Ok();
+///     req.rotate_csrf_token_in_response(&mut resp)?;
+///     Ok(resp.finish())
+/// }
+/// ```
 pub trait CsrfRequestExt {
+    /// Rotates the CSRF token and writes it to the outgoing response according to the
+    /// configured pattern.
     fn rotate_csrf_token_in_response(&self, resp: &mut HttpResponseBuilder) -> Result<(), Error>;
 }
 
@@ -1093,12 +1331,108 @@ impl CsrfRequestExt for HttpRequest {
     }
 }
 
+/// Generates a cryptographically secure random CSRF token.
+///
+/// The token is 32 bytes of randomness, encoded with URL-safe base64 without padding
+/// (aka base64url), resulting in a 43-character ASCII string. The alphabet is limited to
+/// `A-Z`, `a-z`, `0-9`, `-`, and `_`, making it safe for use in URLs, HTTP headers, and
+/// HTML form fields without additional escaping.
+///
+/// This function returns a standalone random value and does not bind the token to any
+/// session or identity. For the Double-Submit Cookie pattern used by this crate, prefer
+/// [`generate_hmac_token_ctx`] which derives an HMAC-protected token from a session id
+/// and the token, making it unforgeable by clients.
+///
+/// # Security
+/// - The token is generated using a CSPRNG and is suitable for CSRF defenses.
+/// - When using the Double-Submit Cookie pattern, do not place this raw token into a
+///   cookie by itself. Use [`generate_hmac_token_ctx`] so the server can verify integrity.
+/// - When using the Synchronizer Token pattern (feature `actix-session`), this raw token
+///   may be stored server-side in session and compared using constant-time equality.
+///
+/// # Examples
+/// Generate a token and validate its shape.
+/// ```
+/// let tok = actix_csrf_middleware::generate_random_token();
+/// assert_eq!(tok.len(), 43, "32 bytes base64url-encoded -> 43 chars");
+/// assert!(tok.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+/// ```
+///
+/// Produce an HMAC-protected token for Double-Submit Cookie flows.
+/// ```
+/// use actix_csrf_middleware::{generate_random_token, generate_hmac_token_ctx, TokenClass};
+///
+/// let session_id = "SID-123";
+/// let secret = b"an-application-wide-secret-at-least-32-bytes-long";
+/// let raw = generate_random_token();
+///
+/// // In typical flows you would call `generate_hmac_token_ctx` directly without
+/// // generating the raw token yourself; shown here for illustration.
+/// let hmac_token = generate_hmac_token_ctx(TokenClass::Authorized, session_id, secret);
+/// assert!(hmac_token.contains('.'));
+///
+/// let parts: Vec<_> = hmac_token.split('.').collect();
+/// assert_eq!(parts.len(), 2);
+/// ```
 pub fn generate_random_token() -> String {
     let mut buf = [0u8; TOKEN_LEN];
     rand::rng().fill_bytes(&mut buf);
     URL_SAFE_NO_PAD.encode(buf)
 }
 
+/// Generates an HMAC-protected CSRF token bound to a context and identifier.
+///
+/// The produced token has the shape `HEX_HMAC.RANDOM`, where:
+/// - `RANDOM` is a fresh value from [`generate_random_token`].
+/// - `HEX_HMAC` is a hex-encoded HMAC-SHA256 over the message
+///   `"{class}|{id}|{RANDOM}"`, using the provided `secret`.
+///
+/// This format is designed for the Double-Submit Cookie pattern:
+/// - The server sets the token as a cookie and expects clients to echo it back via a
+///   form field or header.
+/// - On receipt, the server recomputes the HMAC with the same `class`, `id`, and `secret`.
+///   If the HMAC matches, the token is authentic and not forgeable by the client.
+///
+/// The `class` determines which logical bucket the token belongs to:
+/// - [`TokenClass::Authorized`]: token that is bound to an authenticated session.
+/// - [`TokenClass::Anonymous`]: token used before authentication (pre-session).
+///
+/// # Parameters
+/// - `class`: Distinguishes the token namespace (authorized vs. anonymous).
+/// - `id`: Identifier bound into the token (e.g., a session id); must be the same value
+///   used later for verification.
+/// - `secret`: Application-wide secret key (>= 32 bytes recommended). Changing the secret
+///   invalidates all existing tokens immediately.
+///
+/// # Security
+/// - Tokens are unforgeable without knowledge of `secret` and `id`.
+/// - Use different `class` values to prevent confusion between anonymous and authorized
+///   tokens; they are not interchangeable.
+/// - Choose a high-entropy `secret` with at least 32 bytes.
+///
+/// # Examples
+/// Generate and verify an authorized token.
+/// ```
+/// use actix_csrf_middleware::{generate_hmac_token_ctx, validate_hmac_token_ctx, TokenClass};
+///
+/// let session_id = "SID-abc";
+/// let secret = b"an-application-wide-secret-at-least-32-bytes!";
+/// let tok = generate_hmac_token_ctx(TokenClass::Authorized, session_id, secret);
+///
+/// assert!(tok.contains('.'));
+/// assert!(validate_hmac_token_ctx(TokenClass::Authorized, session_id, tok.as_bytes(), secret).unwrap());
+/// ```
+///
+/// Generate an anonymous token (pre-session) and verify it with the same `id` and `class`.
+/// ```
+/// use actix_csrf_middleware::{generate_hmac_token_ctx, validate_hmac_token_ctx, TokenClass};
+///
+/// let pre_session_id = "pre-123";
+/// let secret = b"an-application-wide-secret-at-least-32-bytes!";
+/// let tok = generate_hmac_token_ctx(TokenClass::Anonymous, pre_session_id, secret);
+///
+/// assert!(validate_hmac_token_ctx(TokenClass::Anonymous, pre_session_id, tok.as_bytes(), secret).unwrap());
+/// ```
 pub fn generate_hmac_token_ctx(class: TokenClass, id: &str, secret: &[u8]) -> String {
     let tok = generate_random_token();
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC can take key of any size");
@@ -1109,9 +1443,21 @@ pub fn generate_hmac_token_ctx(class: TokenClass, id: &str, secret: &[u8]) -> St
     mac.update(tok.as_bytes());
 
     let hmac_hex = hex::encode(mac.finalize().into_bytes());
-    format!("{}.{}", hmac_hex, tok)
+    format!("{hmac_hex}.{tok}")
 }
 
+/// Constant-time equality for token byte slices.
+///
+/// Uses a timing-attack resistant comparison to avoid leaking information about token
+/// values. Prefer using higher-level helpers for CSRF validation, but this function is
+/// useful when verifying raw secrets or signatures.
+///
+/// # Examples
+/// ```
+/// use actix_csrf_middleware::eq_tokens;
+/// assert!(eq_tokens(b"abc", b"abc"));
+/// assert!(!eq_tokens(b"abc", b"abcd"));
+/// ```
 pub fn eq_tokens(token_a: &[u8], token_b: &[u8]) -> bool {
     token_a.ct_eq(token_b).unwrap_u8() == 1
 }
@@ -1122,7 +1468,7 @@ fn encode_pre_session_cookie(id: &str, secret: &[u8]) -> String {
     mac.update(id.as_bytes());
 
     let sig = hex::encode(mac.finalize().into_bytes());
-    format!("{}.{}", sig, id)
+    format!("{sig}.{id}")
 }
 
 fn decode_pre_session_cookie(val: &str, secret: &[u8]) -> Option<String> {
@@ -1147,6 +1493,36 @@ fn decode_pre_session_cookie(val: &str, secret: &[u8]) -> Option<String> {
     }
 }
 
+/// Verifies an HMAC-protected CSRF token for a given class and identifier.
+///
+/// Accepts tokens in the `HEX_HMAC.RANDOM` format produced by
+/// [`generate_hmac_token_ctx`]. Returns `Ok(true)` on a valid token and `Ok(false)` on
+/// structural or verification failure. Returns an `Err` only for malformed UTF-8 or
+/// hex-decoding errors while parsing.
+///
+/// The token is recomputed as HMAC-SHA256 over `"{class}|{id}|{RANDOM}"` using the
+/// provided `secret` and compared in constant time.
+///
+/// # Errors
+/// - Returns `Err` if `token` is not valid UTF-8.
+/// - Returns `Err` if the HMAC hex part cannot be decoded.
+///
+/// # Examples
+/// ```
+/// use actix_csrf_middleware::{
+///     generate_hmac_token_ctx, validate_hmac_token_ctx, TokenClass
+/// };
+///
+/// let sid = "SID-xyz";
+/// let secret = b"application-secret-at-least-32-bytes-long";
+/// let token = generate_hmac_token_ctx(TokenClass::Authorized, sid, secret);
+///
+/// assert!(validate_hmac_token_ctx(TokenClass::Authorized, sid, token.as_bytes(), secret).unwrap());
+///
+/// // Wrong class or id will fail verification
+/// assert!(!validate_hmac_token_ctx(TokenClass::Anonymous, sid, token.as_bytes(), secret).unwrap());
+/// assert!(!validate_hmac_token_ctx(TokenClass::Authorized, "SID-other", token.as_bytes(), secret).unwrap());
+/// ```
 pub fn validate_hmac_token_ctx(
     class: TokenClass,
     id: &str,
@@ -1175,11 +1551,56 @@ pub fn validate_hmac_token_ctx(
     Ok(eq_tokens(&expected_hmac, &hmac_bytes))
 }
 
-/// Test util: validates an authorized token
+/// Convenience helper to validate an authorized-class CSRF token.
+///
+/// This is a thin wrapper around [`validate_hmac_token_ctx`] that always uses
+/// [`TokenClass::Authorized`]. It is intended for tests and simple validation flows
+/// where only authorized tokens are expected.
+///
+/// # Examples
+/// ```
+/// use actix_csrf_middleware::{
+///     generate_hmac_token_ctx, validate_hmac_token, TokenClass
+/// };
+///
+/// let sid = "SID-xyz";
+/// let secret = b"application-secret-at-least-32-bytes-long";
+/// let token = generate_hmac_token_ctx(TokenClass::Authorized, sid, secret);
+///
+/// assert!(validate_hmac_token(sid, token.as_bytes(), secret).unwrap());
+/// ```
 pub fn validate_hmac_token(session_id: &str, token: &[u8], secret: &[u8]) -> Result<bool, Error> {
     validate_hmac_token_ctx(TokenClass::Authorized, session_id, token, secret)
 }
 
+/// Rotates the CSRF token and writes any necessary cookie updates to the response.
+///
+/// - Double-Submit Cookie: requires a session id cookie to be present; sets a fresh
+///   HMAC-protected authorized token cookie and expires any anonymous token.
+/// - Synchronizer Token: sets a fresh random token in server-side session and expires
+///   pre-session markers.
+///
+/// This function is safe to call on both safe and mutating handlers, but it is commonly
+/// used after authentication to immediately upgrade from anonymous to authorized tokens.
+///
+/// # Errors
+/// - Returns `BadRequest` when required inputs are missing (e.g., session id cookie for
+///   Double-Submit Cookie).
+/// - Returns `InternalServerError` if session updates fail (Synchronizer Token) or cookies
+///   cannot be set.
+///
+/// # Examples
+/// Rotate in a handler using the extension trait (preferred):
+/// ```
+/// use actix_csrf_middleware::CsrfRequestExt;
+/// use actix_web::{HttpRequest, HttpResponse};
+///
+/// async fn rotate(req: HttpRequest) -> actix_web::Result<HttpResponse> {
+///     let mut resp = HttpResponse::Ok();
+///     req.rotate_csrf_token_in_response(&mut resp)?;
+///     Ok(resp.finish())
+/// }
+/// ```
 pub fn rotate_csrf_token_in_response(
     req: &HttpRequest,
     resp: &mut HttpResponseBuilder,
@@ -1298,7 +1719,7 @@ fn origin_allowed(headers: &HeaderMap, cfg: &CsrfMiddlewareConfig) -> bool {
                 "{}://{}{}",
                 u.scheme(),
                 u.host_str().unwrap_or(""),
-                u.port().map(|p| format!(":{}", p)).unwrap_or_default()
+                u.port().map(|p| format!(":{p}")).unwrap_or_default()
             );
 
             if let Ok(o) = Url::parse(&origin) {
