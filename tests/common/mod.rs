@@ -8,7 +8,9 @@ use actix_http::Request;
 use actix_session::{
     config::CookieContentSecurity, storage::CookieSessionStore, SessionMiddleware,
 };
-use actix_web::cookie::{Cookie, Key, SameSite};
+use actix_web::cookie::Cookie;
+#[cfg(feature = "actix-session")]
+use actix_web::cookie::{Key, SameSite};
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::{test, web, App, HttpResponse};
 use hmac::Hmac;
@@ -20,10 +22,12 @@ pub type HmacSha256 = Hmac<Sha256>;
 #[allow(dead_code)]
 pub const HMAC_SECRET: &[u8] = b"secret-key";
 
+#[cfg(feature = "actix-session")]
 pub fn test_key() -> Key {
     Key::generate()
 }
 
+#[allow(dead_code)]
 pub async fn build_app(
     cfg: CsrfMiddlewareConfig,
 ) -> impl Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>
@@ -37,6 +41,7 @@ pub async fn build_app(
     .await
 }
 
+#[allow(dead_code)]
 pub fn configure_routes(cfg: &mut web::ServiceConfig) {
     cfg.route(
         "/form",

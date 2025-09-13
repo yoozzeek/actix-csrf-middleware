@@ -3,8 +3,7 @@ mod common;
 
 use actix_csrf_middleware::{
     CsrfMiddleware, CsrfMiddlewareConfig, CsrfRequestExt, CSRF_PRE_SESSION_KEY,
-    DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_HEADER, DEFAULT_CSRF_TOKEN_KEY,
-    DEFAULT_SESSION_ID_KEY,
+    DEFAULT_CSRF_TOKEN_HEADER, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY,
 };
 use actix_http::body::{BoxBody, EitherBody};
 use actix_http::Request;
@@ -12,7 +11,9 @@ use actix_http::Request;
 use actix_session::{
     config::CookieContentSecurity, storage::CookieSessionStore, SessionMiddleware,
 };
-use actix_web::cookie::{time, Cookie, Key, SameSite};
+use actix_web::cookie::{time, Cookie};
+#[cfg(feature = "actix-session")]
+use actix_web::cookie::{Key, SameSite};
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::{http::StatusCode, test, web, App, HttpRequest, HttpResponse};
 

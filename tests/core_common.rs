@@ -67,7 +67,7 @@ where
     S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
 {
     let (token, cookies) = token_and_cookies_for(app, &pattern).await;
-    let form = format!("csrf_token={}", token);
+    let form = format!("csrf_token={token}");
     let mut req = test::TestRequest::post()
         .uri("/submit")
         .insert_header(ContentType::form_url_encoded())
@@ -166,17 +166,17 @@ where
     // Create multipart body including token field
     let boundary = "----parametric-boundary";
     let mut body = Vec::new();
-    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(b"Content-Disposition: form-data; name=\"csrf_token\"\r\n\r\n");
     body.extend_from_slice(token.as_bytes());
     body.extend_from_slice(b"\r\n");
-    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 
     let mut req = test::TestRequest::post()
         .uri("/submit")
         .insert_header((
             "Content-Type",
-            format!("multipart/form-data; boundary={}", boundary),
+            format!("multipart/form-data; boundary={boundary}"),
         ))
         .set_payload(Bytes::from(body));
     for c in cookies {
@@ -198,24 +198,24 @@ where
 
     let boundary = "----parametric-boundary";
     let mut body = Vec::new();
-    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(b"Content-Disposition: form-data; name=\"csrf_token\"\r\n\r\n");
     body.extend_from_slice(token.as_bytes());
     body.extend_from_slice(b"\r\n");
-    body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(
         b"Content-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n",
     );
     body.extend_from_slice(b"Content-Type: text/plain; charset=utf-8\r\n\r\n");
     body.extend_from_slice(b"data");
     body.extend_from_slice(b"\r\n");
-    body.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
 
     let mut req = test::TestRequest::post()
         .uri("/submit")
         .insert_header((
             "Content-Type",
-            format!("multipart/form-data; boundary={}", boundary),
+            format!("multipart/form-data; boundary={boundary}"),
         ))
         .set_payload(Bytes::from(body));
 
@@ -266,7 +266,7 @@ where
     let app = common::build_app(cfg).await;
     let (token, cookies) = token_and_cookies_for(&app, &pattern).await;
 
-    let form = format!("{}={}", FIELD_NAME, token);
+    let form = format!("{FIELD_NAME}={token}");
     let mut req = test::TestRequest::post()
         .uri("/submit")
         .insert_header(ContentType::form_url_encoded())

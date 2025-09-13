@@ -73,7 +73,7 @@ where
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
         // form
-        let form_data = format!("{}={}", DEFAULT_CSRF_TOKEN_FIELD, payload);
+        let form_data = format!("{DEFAULT_CSRF_TOKEN_FIELD}={payload}");
         let mut req = test::TestRequest::post()
             .uri("/submit")
             .insert_header(ContentType::form_url_encoded())
@@ -230,7 +230,7 @@ where
     ];
 
     for payload in payloads {
-        let form_data = format!("{}={}", DEFAULT_CSRF_TOKEN_FIELD, payload);
+        let form_data = format!("{DEFAULT_CSRF_TOKEN_FIELD}={payload}");
         let mut req = test::TestRequest::post()
             .uri("/submit")
             .insert_header(ContentType::form_url_encoded())
@@ -262,7 +262,7 @@ where
     ];
 
     for payload in payloads {
-        let form_data = format!("{}={}", DEFAULT_CSRF_TOKEN_FIELD, payload);
+        let form_data = format!("{DEFAULT_CSRF_TOKEN_FIELD}={payload}");
         let mut req = test::TestRequest::post()
             .uri("/submit")
             .insert_header(ContentType::form_url_encoded())
