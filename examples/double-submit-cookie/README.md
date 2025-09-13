@@ -2,8 +2,8 @@
 
 Minimal Actix Web example demonstrating CSRF protection using the Double Submit Cookie pattern.
 
-- GET /form — returns simple HTML form with editable `csrf_token` field (для тестов; обычно hidden)
-- POST /form — отправка формы; требуется валидный CSRF токен (из формы)
+- GET `/form`: returns simple HTML form with editable `csrf_token` field (для тестов; обычно hidden)
+- POST `/form`: form submission; valid CSRF token required
 
 Run:
 
