@@ -273,7 +273,7 @@ impl CsrfMiddlewareConfig {
             token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.into(),
             anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.into(),
             #[cfg(feature = "actix-session")]
-            anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
+            anon_session_key_name: format!("{DEFAULT_CSRF_TOKEN_KEY}-anon"),
             token_form_field: DEFAULT_CSRF_TOKEN_FIELD.into(),
             token_header_name: DEFAULT_CSRF_TOKEN_HEADER.into(),
             token_cookie_config: None,
@@ -309,7 +309,7 @@ impl CsrfMiddlewareConfig {
             token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.into(),
             anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.into(),
             #[cfg(feature = "actix-session")]
-            anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
+            anon_session_key_name: format!("{DEFAULT_CSRF_TOKEN_KEY}-anon"),
             token_form_field: DEFAULT_CSRF_TOKEN_FIELD.into(),
             token_header_name: DEFAULT_CSRF_TOKEN_HEADER.into(),
             token_cookie_config: Some(CsrfDoubleSubmitCookie {
@@ -1218,7 +1218,7 @@ where
                                         "Failed to insert CSRF token into session",
                                     );
 
-                                    error!("unable to set a csrf token with actix session in csrf response: {:?}",e);
+                                    error!("unable to set a csrf token with actix session in csrf response: {e:?}");
                                     return Poll::Ready(Ok(resp
                                         .into_response(res)
                                         .map_into_boxed_body()
