@@ -1333,20 +1333,30 @@ impl FromRequest for CsrfToken {
 /// use actix_web::{HttpRequest, HttpResponse};
 ///
 /// async fn after_login(req: HttpRequest) -> actix_web::Result<HttpResponse> {
+///     let session_id = "user-session-id";
+///
 ///     let mut resp = HttpResponse::Ok();
-///     req.rotate_csrf_token_in_response(&mut resp)?;
+///     req.rotate_csrf_token_in_response(session_id, &mut resp)?;
+///
 ///     Ok(resp.finish())
 /// }
 /// ```
 pub trait CsrfRequestExt {
     /// Rotates the CSRF token and writes it to the outgoing response according to the
     /// configured pattern.
-    fn rotate_csrf_token_in_response(&self, resp: &mut HttpResponseBuilder) -> Result<(), Error>;
+    fn rotate_csrf_token_in_response(
+        &self,
+        session_id: &str,
+        resp: &mut HttpResponseBuilder,
+    ) -> Result<(), Error>;
 }
 
 impl CsrfRequestExt for HttpRequest {
-    fn rotate_csrf_token_in_response(&self, resp: &mut HttpResponseBuilder) -> Result<(), Error> {
-        // Clone out the config to avoid holding an extensions borrow across session access
+    fn rotate_csrf_token_in_response(
+        &self,
+        session_id: &str,
+        resp: &mut HttpResponseBuilder,
+    ) -> Result<(), Error> {
         let cfg_rc: Rc<CsrfMiddlewareConfig> =
             match self.extensions().get::<Rc<CsrfMiddlewareConfig>>() {
                 Some(cfg_rc_ref) => cfg_rc_ref.clone(),
@@ -1357,7 +1367,7 @@ impl CsrfRequestExt for HttpRequest {
                 }
             };
 
-        rotate_csrf_token_in_response(self, resp, cfg_rc.as_ref())
+        rotate_csrf_token_in_response(session_id, self, resp, cfg_rc.as_ref())
     }
 }
 
@@ -1392,7 +1402,7 @@ impl CsrfRequestExt for HttpRequest {
 /// ```
 /// use actix_csrf_middleware::{generate_random_token, generate_hmac_token_ctx, TokenClass};
 ///
-/// let session_id = "SID-123";
+/// let session_id = "user-session-id";
 /// let secret = b"an-application-wide-secret-at-least-32-bytes-long";
 /// let raw = generate_random_token();
 ///
@@ -1445,7 +1455,7 @@ pub fn generate_random_token() -> String {
 /// ```
 /// use actix_csrf_middleware::{generate_hmac_token_ctx, validate_hmac_token_ctx, TokenClass};
 ///
-/// let session_id = "SID-abc";
+/// let session_id = "user-session-id";
 /// let secret = b"an-application-wide-secret-at-least-32-bytes!";
 /// let tok = generate_hmac_token_ctx(TokenClass::Authorized, session_id, secret);
 ///
@@ -1457,7 +1467,7 @@ pub fn generate_random_token() -> String {
 /// ```
 /// use actix_csrf_middleware::{generate_hmac_token_ctx, validate_hmac_token_ctx, TokenClass};
 ///
-/// let pre_session_id = "pre-123";
+/// let pre_session_id = "pre-session";
 /// let secret = b"an-application-wide-secret-at-least-32-bytes!";
 /// let tok = generate_hmac_token_ctx(TokenClass::Anonymous, pre_session_id, secret);
 ///
@@ -1618,20 +1628,8 @@ pub fn validate_hmac_token(session_id: &str, token: &[u8], secret: &[u8]) -> Res
 ///   Double-Submit Cookie).
 /// - Returns `InternalServerError` if session updates fail (Synchronizer Token) or cookies
 ///   cannot be set.
-///
-/// # Examples
-/// Rotate in a handler using the extension trait (preferred):
-/// ```
-/// use actix_csrf_middleware::CsrfRequestExt;
-/// use actix_web::{HttpRequest, HttpResponse};
-///
-/// async fn rotate(req: HttpRequest) -> actix_web::Result<HttpResponse> {
-///     let mut resp = HttpResponse::Ok();
-///     req.rotate_csrf_token_in_response(&mut resp)?;
-///     Ok(resp.finish())
-/// }
-/// ```
 pub fn rotate_csrf_token_in_response(
+    session_id: &str,
     req: &HttpRequest,
     resp: &mut HttpResponseBuilder,
     config: &CsrfMiddlewareConfig,
@@ -1665,14 +1663,6 @@ pub fn rotate_csrf_token_in_response(
             Ok(())
         }
         CsrfPattern::DoubleSubmitCookie => {
-            // Need the session id from cookie
-            let session_id = req
-                .cookie(&config.session_id_cookie_name)
-                .map(|c| c.value().to_string())
-                .ok_or_else(|| {
-                    actix_web::error::ErrorBadRequest("Missing session id cookie for CSRF rotation")
-                })?;
-
             let token = generate_hmac_token_ctx(
                 TokenClass::Authorized,
                 &session_id,
