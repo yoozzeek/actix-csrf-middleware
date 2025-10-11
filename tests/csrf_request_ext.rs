@@ -44,8 +44,14 @@ async fn build_app_with_auth(
 }
 
 async fn auth_handler(req: HttpRequest) -> actix_web::Result<HttpResponse> {
+    let session_id = req
+        .cookie(DEFAULT_SESSION_ID_KEY)
+        .map(|c| c.value().to_owned())
+        .unwrap_or_else(|| "missing-session-id".to_string());
+
     let mut resp = HttpResponse::Ok();
-    req.rotate_csrf_token_in_response(&mut resp)?;
+    req.rotate_csrf_token_in_response(&session_id, &mut resp)?;
+
     Ok(resp.finish())
 }
 

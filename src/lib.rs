@@ -1665,7 +1665,7 @@ pub fn rotate_csrf_token_in_response(
         CsrfPattern::DoubleSubmitCookie => {
             let token = generate_hmac_token_ctx(
                 TokenClass::Authorized,
-                &session_id,
+                session_id,
                 config.secret_key.as_slice(),
             );
 
