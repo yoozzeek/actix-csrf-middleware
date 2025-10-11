@@ -33,6 +33,74 @@ use std::{
 use subtle::ConstantTimeEq;
 use url::Url;
 
+/// Default name of the authorized CSRF token bucket.
+///
+/// Usage depends on the chosen pattern:
+/// - Double-Submit Cookie: cookie name that stores the authorized token.
+/// - Synchronizer Token (requires the `actix-session` feature): session key
+///   under which the server stores the authorized token.
+///
+/// Override by setting [`CsrfMiddlewareConfig::token_cookie_name`].
+pub const DEFAULT_CSRF_TOKEN_KEY: &str = "CSRF";
+
+/// Default cookie name for anonymous (pre-session) tokens in the Double-Submit Cookie pattern.
+///
+/// Before a user is authenticated, the middleware may issue an anonymous token so that
+/// clients can perform allowed mutating operations (e.g., registration). This name is used
+/// for that cookie when using the Double-Submit Cookie pattern.
+///
+/// For the Synchronizer Token pattern (with `actix-session`), anonymous tokens are stored
+/// server-side under [`CsrfMiddlewareConfig::anon_session_key_name`] and this cookie is not
+/// used for token storage.
+///
+/// Override by setting [`CsrfMiddlewareConfig::anon_token_cookie_name`].
+pub const DEFAULT_CSRF_ANON_TOKEN_KEY: &str = "CSRF-ANON";
+
+/// Default field name used to extract the CSRF token from request bodies.
+///
+/// When the token is not present in the header, the middleware looks for this field in:
+/// - `application/json` bodies
+/// - `application/x-www-form-urlencoded` bodies
+///
+/// It does not parse `multipart/form-data` unless [`CsrfMiddlewareConfig::with_multipart`]
+/// is enabled, in which case you must handle token extraction manually in your handler.
+///
+/// Override by setting [`CsrfMiddlewareConfig::token_form_field`].
+pub const DEFAULT_CSRF_TOKEN_FIELD: &str = "csrf_token";
+
+/// Default header name that carries the CSRF token.
+///
+/// On mutating requests the middleware checks the header first;
+/// if absent, it attempts to read the token from the body field [`DEFAULT_CSRF_TOKEN_FIELD`].
+///
+/// Override by setting [`CsrfMiddlewareConfig::token_header_name`].
+pub const DEFAULT_CSRF_TOKEN_HEADER: &str = "X-CSRF-Token";
+
+/// Default name of the session id cookie used to bind tokens and detect authorization state.
+///
+/// - Double-Submit Cookie: the session id is mixed into HMAC derivation so the server can
+///   verify the token’s integrity and provenance.
+/// - Synchronizer Token: presence of this cookie indicates an authenticated session; the
+///   actual token value is stored server-side under [`DEFAULT_CSRF_TOKEN_KEY`] (or a custom
+///   `token_cookie_name`).
+///
+/// Override by setting [`CsrfMiddlewareConfig::session_id_cookie_name`].
+pub const DEFAULT_SESSION_ID_KEY: &str = "id";
+
+/// Name of the pre-session cookie minted by the middleware for unauthenticated flows.
+///
+/// The value is HMAC-signed by the server (see `encode_pre_session_cookie` /
+/// `decode_pre_session_cookie`) and serves as a stable identifier before a real session
+/// exists. It enables anonymous tokens and a smooth upgrade to authorized tokens after login.
+///
+/// Security characteristics are intentionally strict and defined by
+/// [`PRE_SESSION_HTTP_ONLY`], [`PRE_SESSION_SECURE`], and [`PRE_SESSION_SAME_SITE`]. These
+/// flags are not configurable.
+///
+/// The cookie is removed automatically once the request is associated with an authorized
+/// session.
+pub const CSRF_PRE_SESSION_KEY: &str = "pre-session";
+
 /// HttpOnly flag for the pre-session cookie used to bootstrap CSRF before login.
 ///
 /// This flag is applied to the cookie named [`CSRF_PRE_SESSION_KEY`] whenever it is
@@ -60,106 +128,6 @@ const PRE_SESSION_SECURE: bool = true;
 /// cookie. Not configurable by design.
 const PRE_SESSION_SAME_SITE: SameSite = SameSite::Strict;
 
-/// Default name of the authorized CSRF token bucket.
-///
-/// Usage depends on the chosen pattern:
-/// - Double-Submit Cookie: cookie name that stores the authorized token.
-/// - Synchronizer Token (requires the `actix-session` feature): session key
-///   under which the server stores the authorized token.
-///
-/// Override by setting [`CsrfMiddlewareConfig::token_cookie_name`].
-///
-/// # Examples
-/// ```
-/// use actix_csrf_middleware::CsrfMiddlewareConfig;
-///
-/// let mut cfg = CsrfMiddlewareConfig::double_submit_cookie(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-/// cfg.token_cookie_name = "X-CSRF-Authorized".to_string();
-/// ```
-pub const DEFAULT_CSRF_TOKEN_KEY: &str = "CSRF";
-
-/// Default cookie name for anonymous (pre-session) tokens in the Double-Submit Cookie pattern.
-///
-/// Before a user is authenticated, the middleware may issue an anonymous token so that
-/// clients can perform allowed mutating operations (e.g., registration). This name is used
-/// for that cookie when using the Double-Submit Cookie pattern.
-///
-/// For the Synchronizer Token pattern (with `actix-session`), anonymous tokens are stored
-/// server-side under [`CsrfMiddlewareConfig::anon_session_key_name`] and this cookie is not
-/// used for token storage.
-///
-/// Override by setting [`CsrfMiddlewareConfig::anon_token_cookie_name`].
-pub const DEFAULT_CSRF_ANON_TOKEN_KEY: &str = "CSRF-ANON";
-
-/// Default field name used to extract the CSRF token from request bodies.
-///
-/// When the token is not present in the header, the middleware looks for this field in:
-/// - `application/json` bodies
-/// - `application/x-www-form-urlencoded` bodies
-///
-/// It does not parse `multipart/form-data` unless [`CsrfMiddlewareConfig::with_multipart`]
-/// is enabled, in which case you must handle token extraction manually in your handler.
-///
-/// Override by setting [`CsrfMiddlewareConfig::token_form_field`].
-///
-/// # Examples
-/// ```
-/// use actix_csrf_middleware::CsrfMiddlewareConfig;
-///
-/// let mut cfg = CsrfMiddlewareConfig::double_submit_cookie(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-/// cfg.token_form_field = "csrf_custom".to_string();
-/// ```
-pub const DEFAULT_CSRF_TOKEN_FIELD: &str = "csrf_token";
-
-/// Default header name that carries the CSRF token.
-///
-/// On mutating requests the middleware checks the header first;
-/// if absent, it attempts to read the token from the body field [`DEFAULT_CSRF_TOKEN_FIELD`].
-///
-/// Override by setting [`CsrfMiddlewareConfig::token_header_name`].
-///
-/// # Examples
-/// ```
-/// use actix_csrf_middleware::CsrfMiddlewareConfig;
-///
-/// let mut cfg = CsrfMiddlewareConfig::double_submit_cookie(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-/// cfg.token_header_name = "X-CSRF".to_string();
-/// ```
-pub const DEFAULT_CSRF_TOKEN_HEADER: &str = "X-CSRF-Token";
-
-/// Default name of the session id cookie used to bind tokens and detect authorization state.
-///
-/// - Double-Submit Cookie: the session id is mixed into HMAC derivation so the server can
-///   verify the token’s integrity and provenance.
-/// - Synchronizer Token: presence of this cookie indicates an authenticated session; the
-///   actual token value is stored server-side under [`DEFAULT_CSRF_TOKEN_KEY`] (or a custom
-///   `token_cookie_name`).
-///
-/// Override by setting [`CsrfMiddlewareConfig::session_id_cookie_name`].
-///
-/// # Examples
-/// ```
-/// use actix_csrf_middleware::CsrfMiddlewareConfig;
-///
-/// let mut cfg = CsrfMiddlewareConfig::double_submit_cookie(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-/// cfg.session_id_cookie_name = "sid".to_string();
-/// ```
-pub const DEFAULT_SESSION_ID_KEY: &str = "id";
-
-/// Name of the pre-session cookie minted by the middleware for unauthenticated flows.
-///
-/// The value is HMAC-signed by the server (see `encode_pre_session_cookie` /
-/// `decode_pre_session_cookie`) and serves as a stable identifier before a real session
-/// exists. It enables anonymous tokens and a smooth upgrade to authorized tokens after login.
-///
-/// Security characteristics are intentionally strict and defined by
-/// [`PRE_SESSION_HTTP_ONLY`], [`PRE_SESSION_SECURE`], and [`PRE_SESSION_SAME_SITE`]. These
-/// flags are not configurable.
-///
-/// The cookie is removed automatically once the request is associated with an authorized
-/// session.
-pub const CSRF_PRE_SESSION_KEY: &str = "pre-session";
-
 /// Size (in bytes) of raw random tokens used by this crate.
 ///
 /// Tokens are 32 random bytes encoded as base64url without padding, resulting in a 43-character
@@ -178,18 +146,6 @@ type HmacSha256 = Hmac<Sha256>;
 /// This distinction helps prevent accidental mixing of tokens. For example, an
 /// anonymous token must not be accepted on endpoints that require an authenticated
 /// session.
-///
-/// # Examples
-/// Choosing the correct class when generating HMAC tokens:
-/// ```
-/// use actix_csrf_middleware::{generate_hmac_token_ctx, validate_hmac_token_ctx, TokenClass};
-///
-/// let secret = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-/// let session_id = "SID-42";
-/// let t = generate_hmac_token_ctx(TokenClass::Authorized, session_id, secret);
-///
-/// assert!(validate_hmac_token_ctx(TokenClass::Authorized, session_id, t.as_bytes(), secret).unwrap());
-/// ```
 pub enum TokenClass {
     /// Token used before authentication.
     Anonymous,
@@ -231,20 +187,6 @@ pub enum CsrfPattern {
 ///   header or form field.
 /// - `secure`: Should be `true` in production to restrict cookies to HTTPS.
 /// - `same_site`: Choose `Strict` or `Lax` depending on your cross-site needs.
-///
-/// # Examples
-/// ```
-/// use actix_csrf_middleware::{CsrfMiddlewareConfig, CsrfDoubleSubmitCookie};
-/// use actix_web::cookie::SameSite;
-///
-/// let secret = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-/// let cfg = CsrfMiddlewareConfig::double_submit_cookie(secret)
-///     .with_token_cookie_config(CsrfDoubleSubmitCookie {
-///         http_only: false,
-///         secure: true,
-///         same_site: SameSite::Strict,
-///     });
-/// ```
 pub struct CsrfDoubleSubmitCookie {
     /// If true, JavaScript cannot read the cookie
     pub http_only: bool,
@@ -277,22 +219,6 @@ pub struct CsrfDoubleSubmitCookie {
 ///   [`with_enforce_origin`](Self::with_enforce_origin) to mitigate CSRF even if a token
 ///   leaks.
 /// - Avoid allowing `multipart/form-data` unless you can handle token extraction manually.
-///
-/// # Examples
-/// Basic Double-Submit Cookie configuration:
-/// ```
-/// use actix_csrf_middleware::{CsrfMiddlewareConfig, CsrfDoubleSubmitCookie};
-/// use actix_web::cookie::SameSite;
-///
-/// let secret = b"at-least-32-bytes-of-secret-key-material...";
-/// let cfg = CsrfMiddlewareConfig::double_submit_cookie(secret)
-///     .with_enforce_origin(true, vec!["https://example.com".to_string()])
-///     .with_token_cookie_config(CsrfDoubleSubmitCookie {
-///         http_only: false, // must be false for Double-Submit
-///         secure: true,
-///         same_site: SameSite::Lax,
-///     });
-/// ```
 pub struct CsrfMiddlewareConfig {
     pub pattern: CsrfPattern,
     pub manual_multipart: bool,
@@ -487,12 +413,12 @@ impl CsrfMiddlewareConfig {
 ///     .wrap(CsrfMiddleware::new(cfg))
 ///     .service(
 ///         web::resource("/form").route(web::get().to(|csrf: CsrfToken| async move {
-///             Ok::<_, actix_web::Error>(HttpResponse::Ok().body(format!("token:{}", csrf.0)))
+///             HttpResponse::Ok().body(format!("token:{}", csrf.0))
 ///         }))
 ///     )
 ///     .service(
 ///         web::resource("/submit").route(web::post().to(|_csrf: CsrfToken| async move {
-///             Ok::<_, actix_web::Error>(HttpResponse::Ok())
+///             HttpResponse::Ok()
 ///         }))
 ///     );
 /// ```
