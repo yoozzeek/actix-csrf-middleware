@@ -41,11 +41,3 @@ criterion = "0.5"
 actix-rt = "2.10"
 actix-multipart = "0.7.2"
 proptest = "1.4"
-
-[[bench]]
-name = "hmac_token"
-harness = false
-
-[[bench]]
-name = "csrf_token"
-harness = false
