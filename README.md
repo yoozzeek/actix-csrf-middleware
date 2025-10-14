@@ -3,7 +3,6 @@
 [![CI](https://github.com/yoozzeek/actix-csrf-middleware/actions/workflows/ci.yml/badge.svg)](https://github.com/yoozzeek/actix-csrf-middleware/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/actix-csrf-middleware.svg)](https://crates.io/crates/actix-csrf-middleware)
 [![Docs.rs](https://docs.rs/actix-csrf-middleware/badge.svg)](https://docs.rs/actix-csrf-middleware)
-[![Downloads](https://img.shields.io/crates/d/actix-csrf-middleware.svg)](https://crates.io/crates/actix-csrf-middleware)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 CSRF protection middleware for [Actix Web](https://github.com/actix/actix-web) applications. Supports double submit
@@ -41,7 +40,8 @@ Minimal runnable examples are provided in the examples directory:
 
 - Double Submit Cookie: [examples/double-submit-cookie](examples/double-submit-cookie)
 - Synchronizer Token (requires `actix-session`): [examples/synchronizer-token](examples/synchronizer-token)
-- Rotation After Auth (Double Submit Cookie + RequestExt rotate): [examples/rotation-after-auth](examples/rotation-after-auth)
+- Rotation After Auth (Double Submit Cookie + RequestExt
+  rotate): [examples/rotation-after-auth](examples/rotation-after-auth)
 
 ## License
 
