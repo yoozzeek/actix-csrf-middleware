@@ -1,5 +1,7 @@
 mod common;
 
+use common::*;
+
 use actix_csrf_middleware::{
     generate_random_token, CsrfDoubleSubmitCookie, CsrfMiddlewareConfig, CsrfPattern,
     CSRF_PRE_SESSION_KEY, DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_FIELD,
@@ -7,12 +9,11 @@ use actix_csrf_middleware::{
 };
 use actix_http::body::{BoxBody, EitherBody};
 use actix_http::{Request, StatusCode};
-use actix_web::cookie::{Cookie, SameSite};
+use actix_web::cookie::{time, Cookie, SameSite};
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::http::header::ContentType;
 use actix_web::test;
-use common::*;
-use hmac::Mac;
+use hmac::{KeyInit, Mac};
 
 fn get_secret_key() -> Vec<u8> {
     b"super-secret-super-secret-super-secret-xx".to_vec()
@@ -432,4 +433,99 @@ async fn token_should_be_unforgeable() {
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[actix_web::test]
+async fn auth_transition_expires_anon_token_cookie() {
+    let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
+
+    let (_anon_token, anon_token_cookie, pre_session_cookie) = token_cookie(&app, None, None).await;
+
+    let session_cookie = Cookie::build(DEFAULT_SESSION_ID_KEY, "SID-789").finish();
+
+    let req = test::TestRequest::get()
+        .uri("/form")
+        .cookie(anon_token_cookie)
+        .cookie(pre_session_cookie)
+        .cookie(session_cookie)
+        .to_request();
+
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+
+    let expired_pre_session = resp.response().cookies().any(|c| {
+        c.name() == CSRF_PRE_SESSION_KEY && c.max_age() == Some(time::Duration::seconds(0))
+    });
+    let expired_anon = resp.response().cookies().any(|c| {
+        c.name() == DEFAULT_CSRF_ANON_TOKEN_KEY && c.max_age() == Some(time::Duration::seconds(0))
+    });
+
+    assert!(
+        expired_pre_session,
+        "pre-session cookie must be expired on auth transition"
+    );
+    assert!(
+        expired_anon,
+        "anon token cookie must be expired in lockstep with pre-session on auth transition"
+    );
+}
+
+#[actix_web::test]
+async fn regenerates_anon_token_when_pre_session_reminted() {
+    let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
+
+    let (stale_token, stale_anon_cookie, _stale_pre_session) = token_cookie(&app, None, None).await;
+
+    // Orphaned anon token: cookie survives but its pre-session is gone. The next anonymous
+    // GET mints a new pre-session id, so the anon token must be regenerated to match it.
+    let req = test::TestRequest::get()
+        .uri("/form")
+        .cookie(stale_anon_cookie)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+
+    let new_anon_cookie = resp
+        .response()
+        .cookies()
+        .find(|c| c.name() == DEFAULT_CSRF_ANON_TOKEN_KEY)
+        .map(|c| c.into_owned())
+        .expect("anon token cookie must be reissued when pre-session is reminted");
+    let new_pre_session = resp
+        .response()
+        .cookies()
+        .find(|c| c.name() == CSRF_PRE_SESSION_KEY)
+        .map(|c| c.into_owned())
+        .expect("new pre-session cookie must be set");
+
+    let new_token = new_anon_cookie.value().to_string();
+    assert_ne!(
+        stale_token, new_token,
+        "anon token must be regenerated, not the stale value reused"
+    );
+
+    let req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, new_token))
+        .cookie(new_anon_cookie)
+        .cookie(new_pre_session.clone())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "regenerated anon token must validate against the new pre-session"
+    );
+
+    let req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, stale_token))
+        .cookie(new_pre_session)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "stale anon token bound to the old pre-session must be rejected against the new one"
+    );
 }
