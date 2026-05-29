@@ -2,10 +2,12 @@
 
 Minimal Actix Web example demonstrating CSRF token rotation after successful authorization/mutation.
 
-- POST `/login`: simulates login by issuing a session id cookie (`id`)
-- GET `/form`: returns simple HTML form with editable `csrf_token` field (for tests; usually hidden)
-- POST `/form`: protected endpoint; upon success rotates CSRF token using
-  `CsrfRequestExt::rotate_csrf_token_in_response`
+- GET `/`: anonymous login form with the `csrf_token` field
+- POST `/login`: issues a session id cookie (`id`) and upgrades the token to authorized via
+  `CsrfRequestExt::rotate_csrf_after_login`
+- GET `/page`: authorized page with a logout form
+- POST `/logout`: tears down the session and CSRF state via
+  `CsrfRequestExt::rotate_csrf_after_logout`
 
 Run:
 

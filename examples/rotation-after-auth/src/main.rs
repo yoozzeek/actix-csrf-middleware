@@ -2,10 +2,11 @@ use actix_csrf_middleware::{
     CsrfMiddleware, CsrfMiddlewareConfig, CsrfRequestExt, CsrfToken, DEFAULT_CSRF_TOKEN_FIELD,
     DEFAULT_SESSION_ID_KEY,
 };
-use actix_web::cookie::{time, Cookie};
+use actix_web::cookie::Cookie;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 
-// Simulate login by issuing a session id cookie, then redirect to /form
+// Issue a session id cookie, upgrade the
+// CSRF token to authorized, redirect to /page.
 async fn login_handler(req: HttpRequest) -> actix_web::Result<HttpResponse> {
     let session_id = "auth-session-id";
 
@@ -17,23 +18,22 @@ async fn login_handler(req: HttpRequest) -> actix_web::Result<HttpResponse> {
     // Set session cookie first
     resp.cookie(session_cookie);
 
-    // Then rotate token
-    req.rotate_csrf_token_in_response(session_id, &mut resp)?;
+    // Upgrade anonymous CSRF state
+    // to authorized for the new session.
+    req.rotate_csrf_after_login(session_id, &mut resp)?;
 
     resp.append_header((actix_web::http::header::LOCATION, "/page"));
 
     Ok(resp.finish())
 }
 
-async fn logout_handler() -> actix_web::Result<HttpResponse> {
+async fn logout_handler(req: HttpRequest) -> actix_web::Result<HttpResponse> {
     let mut resp = HttpResponse::SeeOther();
 
-    // Delete session id cookie
-    let mut del = Cookie::new(DEFAULT_SESSION_ID_KEY.to_string(), "");
-    del.set_max_age(time::Duration::seconds(0));
-    del.set_expires(time::OffsetDateTime::UNIX_EPOCH);
-    del.set_path("/");
-    resp.cookie(del);
+    // Tear down the session and CSRF state.
+    // The next anonymous GET re-mints a fresh
+    // pre-session / CSRF-ANON pair via the middleware.
+    req.rotate_csrf_after_logout(&mut resp)?;
 
     resp.append_header((actix_web::http::header::LOCATION, "/"));
 
@@ -52,7 +52,7 @@ async fn login_form(csrf: CsrfToken) -> impl Responder {
     <p>
         Middleware generates pre-session and CSRF token of anonynous class to this operation.
         After sucessfull login (or registration) set session id as usually and call
-        rotate_csrf_token_in_response to trigger CSRF token rotation. It will securly
+        rotate_csrf_after_login to trigger CSRF token rotation. It will securly
         rotate previous anonynous token with authorized one that can be used on CSRF protected routes.
     </p>
     <p><code>{token}</code></p>
