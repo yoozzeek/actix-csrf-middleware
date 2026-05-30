@@ -283,7 +283,7 @@ async fn custom_config_header_name() {
         allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
     };
-    
+
     let app = build_app(cfg).await;
     let (token, token_cookie, session_id_cookie) = { token_cookie(&app, None, None).await };
 
