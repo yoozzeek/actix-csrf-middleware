@@ -1,5 +1,5 @@
 [package]
-name = "actix-csrf-middleware-example-double"
+name = "example-double-submit-cookie"
 version = "0.1.0"
 edition = "2021"
 
