@@ -9,7 +9,7 @@ use actix_web::{
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
     http::{header, Method},
     web::BytesMut,
-    Error, FromRequest, HttpMessage, HttpRequest, HttpResponse, HttpResponseBuilder,
+    Error, FromRequest, HttpMessage, HttpRequest, HttpResponse, HttpResponseBuilder, ResponseError,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures_util::{
@@ -24,6 +24,7 @@ use rand::Rng;
 use sha2::Sha256;
 use std::{
     collections::HashMap,
+    error, fmt,
     future::Future,
     marker::PhantomData,
     pin::Pin,
@@ -89,30 +90,26 @@ pub const DEFAULT_CSRF_TOKEN_HEADER: &str = "X-CSRF-Token";
 /// Override with [`CsrfMiddlewareConfig::session_id_cookie_name`].
 pub const DEFAULT_SESSION_ID_KEY: &str = "id";
 
-/// Pre-session cookie minted for
-/// unauthenticated flows.
+/// Pre-session cookie minted
+/// for unauthenticated flows.
 ///
 /// HMAC-signed by the server
 /// (`encode_pre_session_cookie` /
 /// `decode_pre_session_cookie`) to give a stable
 /// identifier before a real session exists,
 /// enabling anonymous tokens and a clean upgrade
-/// to authorized tokens after login. Flags are
-/// fixed by `PRE_SESSION_HTTP_ONLY`,
-/// `PRE_SESSION_SECURE`, and
-/// `PRE_SESSION_SAME_SITE` and are not
-/// configurable. Removed once the request is
-/// associated with an authorized session.
+/// to authorized tokens after login. It is always
+/// HttpOnly and SameSite=Strict; its Secure flag
+/// follows [`CsrfMiddlewareConfig::secure`],
+/// shared with every other cookie the middleware
+/// sets. Removed once the request is associated
+/// with an authorized session.
 pub const CSRF_PRE_SESSION_KEY: &str = "pre-session";
 
 /// Pre-session cookie is HttpOnly so client scripts
 /// cannot read it, limiting token exfiltration.
-/// Strict and not configurable by design.
-const PRE_SESSION_HTTP_ONLY: bool = true;
-
-/// Pre-session cookie is Secure (HTTPS-only).
 /// Not configurable by design.
-const PRE_SESSION_SECURE: bool = true;
+const PRE_SESSION_HTTP_ONLY: bool = true;
 
 /// Pre-session cookie is SameSite=Strict,
 /// minimizing cross-site sending. Not configurable.
@@ -148,6 +145,96 @@ impl TokenClass {
     }
 }
 
+/// Reason a request was rejected by [`CsrfMiddleware`].
+///
+/// Implements [`ResponseError`], so by default it
+/// renders as `{"error":"<code>"}` (see [`code`]) with
+/// the status in [`status_code`], `Content-Type:
+/// application/json`. A copy is stored in the response
+/// extensions, so an app's `ErrorHandlers` can recover it
+/// with `res.response().extensions().get::<CsrfError>()`
+/// and re-render in its own shape.
+///
+/// [`code`]: CsrfError::code
+/// [`status_code`]: ResponseError::status_code
+/// [`ResponseError`]: ResponseError
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CsrfError {
+    /// No token in the configured header or body
+    /// field on a mutating request. `400`.
+    TokenMissing,
+
+    /// Token present but failed verification. `400`.
+    TokenInvalid,
+
+    /// Origin/Referer rejected by strict
+    /// enforcement. `403`.
+    OriginRejected,
+
+    /// `multipart/form-data` request while
+    /// `with_multipart` is disabled. `400`.
+    MultipartNotEnabled,
+
+    /// Body exceeded `max_body_bytes` before the
+    /// token could be read. `413`.
+    BodyTooLarge,
+
+    /// Request body could not be read. `400`.
+    BodyRead,
+
+    /// Middleware fault. `500`. The body is generic;
+    /// the cause is logged server-side and never sent
+    /// to the client.
+    Internal,
+}
+
+impl CsrfError {
+    /// Stable, machine-readable code for the rejection.
+    pub fn code(self) -> &'static str {
+        match self {
+            CsrfError::TokenMissing => "csrf_token_missing",
+            CsrfError::TokenInvalid => "csrf_token_invalid",
+            CsrfError::OriginRejected => "csrf_origin_rejected",
+            CsrfError::MultipartNotEnabled => "csrf_multipart_not_enabled",
+            CsrfError::BodyTooLarge => "csrf_body_too_large",
+            CsrfError::BodyRead => "csrf_body_read_error",
+            CsrfError::Internal => "csrf_internal_error",
+        }
+    }
+}
+
+impl fmt::Display for CsrfError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+impl error::Error for CsrfError {}
+
+impl ResponseError for CsrfError {
+    fn status_code(&self) -> StatusCode {
+        match self {
+            CsrfError::OriginRejected => StatusCode::FORBIDDEN,
+            CsrfError::BodyTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            CsrfError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            CsrfError::TokenMissing
+            | CsrfError::TokenInvalid
+            | CsrfError::MultipartNotEnabled
+            | CsrfError::BodyRead => StatusCode::BAD_REQUEST,
+        }
+    }
+
+    fn error_response(&self) -> HttpResponse {
+        let mut resp = HttpResponse::build(self.status_code())
+            .content_type("application/json")
+            .body(format!(r#"{{"error":"{}"}}"#, self.code()));
+
+        resp.extensions_mut().insert(*self);
+
+        resp
+    }
+}
+
 /// CSRF defense patterns for [`CsrfMiddleware`].
 ///
 /// `DoubleSubmitCookie`: HMAC-protected token in
@@ -175,13 +262,13 @@ pub enum CsrfPattern {
 ///
 /// `http_only` must be `false` so client code can
 /// read the token and mirror it into a header or
-/// form field. `secure` should be `true` in
-/// production (HTTPS-only). `same_site` is
-/// `Strict` or `Lax` per cross-site needs.
+/// form field. `same_site` is `Strict` or `Lax`
+/// per cross-site needs. The `Secure` flag is
+/// not here: it is shared across every cookie the
+/// middleware sets via [`CsrfMiddlewareConfig::secure`].
 #[derive(Clone)]
 pub struct CsrfDoubleSubmitCookie {
     pub http_only: bool,
-    pub secure: bool,
     pub same_site: SameSite,
 }
 
@@ -202,6 +289,8 @@ pub struct CsrfDoubleSubmitCookie {
 /// - Double-Submit Cookie: the token cookie must
 ///   be client-readable (`http_only = false`) so
 ///   it can be mirrored into the header.
+/// - Keep `secure = true` (the default) in
+///   production; only disable it for local HTTP.
 /// - Enable [`with_enforce_origin`](Self::with_enforce_origin)
 ///   to mitigate CSRF even if a token leaks.
 /// - Avoid `multipart/form-data` unless you can
@@ -212,13 +301,20 @@ pub struct CsrfMiddlewareConfig {
     pub manual_multipart: bool,
     pub session_id_cookie_name: String,
 
+    /// `Secure` flag applied to every cookie
+    /// the middleware sets (pre-session and
+    /// token cookies alike). `true` by default.
+    /// Set `false` only for local HTTP.
+    pub secure: bool,
+
     /// Authorized (session-bound) tokens.
     pub token_cookie_name: String,
 
     /// Anonymous (pre-session) tokens.
     pub anon_token_cookie_name: String,
 
-    /// Anonymous (pre-session) token key for SynchronizerToken.
+    /// Anonymous (pre-session) token
+    /// key for SynchronizerToken.
     #[cfg(feature = "actix-session")]
     pub anon_session_key_name: String,
     pub token_form_field: String,
@@ -278,6 +374,7 @@ impl CsrfMiddlewareConfig {
             secret_key: zeroize::Zeroizing::new(secret_key.into()),
             skip_for: vec![],
             manual_multipart: false,
+            secure: true,
             enforce_origin: false,
             allowed_origins: vec![],
             max_body_bytes: 2 * 1024 * 1024, // 2 MiB default
@@ -313,12 +410,12 @@ impl CsrfMiddlewareConfig {
             token_header_name: DEFAULT_CSRF_TOKEN_HEADER.into(),
             token_cookie_config: Some(CsrfDoubleSubmitCookie {
                 http_only: false, // Should be false for double-submit cookie
-                secure: true,
                 same_site: SameSite::Strict,
             }),
             secret_key: zeroize::Zeroizing::new(secret_key.into()),
             skip_for: vec![],
             manual_multipart: false,
+            secure: true,
             enforce_origin: false,
             allowed_origins: vec![],
             max_body_bytes: 2 * 1024 * 1024,
@@ -352,6 +449,15 @@ impl CsrfMiddlewareConfig {
     /// header or form field.
     pub fn with_token_cookie_config(mut self, config: CsrfDoubleSubmitCookie) -> Self {
         self.token_cookie_config = Some(config);
+        self
+    }
+
+    /// Set the `Secure` flag for every cookie the
+    /// middleware emits (pre-session and token).
+    ///
+    /// Defaults to `true`. Set `false` only for local HTTP.
+    pub fn with_secure(mut self, secure: bool) -> Self {
+        self.secure = secure;
         self
     }
 
@@ -533,7 +639,6 @@ impl<S> CsrfMiddlewareService<S> {
                 };
 
                 let found = session.get::<String>(key).ok().flatten();
-
                 match found {
                     Some(tok) => (tok, false),
                     None => (generate_random_token(), true),
@@ -551,7 +656,6 @@ impl<S> CsrfMiddlewareService<S> {
                 };
 
                 let existing = req.cookie(cookie_name).map(|c| c.value().to_string());
-
                 match existing {
                     Some(tok) if !pre_session_regenerated => (tok, false),
                     _ => {
@@ -561,6 +665,7 @@ impl<S> CsrfMiddlewareService<S> {
                             session_id.expect("Session or pre-session id is passed"),
                             secret,
                         );
+
                         (tok, true)
                     }
                 }
@@ -700,7 +805,7 @@ where
 
         // Optionally enforce Origin/Referer before token checks
         if self.config.enforce_origin && !origin_allowed(req.headers(), &self.config) {
-            let resp = HttpResponse::with_body(StatusCode::FORBIDDEN, "Invalid request origin");
+            let resp = CsrfError::OriginRejected.error_response();
             return Either::right(ok(req
                 .into_response(resp)
                 .map_into_boxed_body()
@@ -720,11 +825,7 @@ where
                 // Deny any multipart/form-data requests if
                 // it isn't allowed explicitly by the consumer.
                 if !self.config.manual_multipart {
-                    let resp = HttpResponse::with_body(
-                        StatusCode::BAD_REQUEST,
-                        "Multipart form data is not enabled by csrf config",
-                    );
-
+                    let resp = CsrfError::MultipartNotEnabled.error_response();
                     return Either::right(ok(req
                         .into_response(resp)
                         .map_into_boxed_body()
@@ -867,11 +968,9 @@ where
                         if let Some(id) = session_id.take() {
                             Some(id)
                         } else {
-                            let resp = HttpResponse::with_body(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "Session id is empty in csrf token validator".to_string(),
-                            );
+                            error!("session id is empty in csrf token validator");
 
+                            let resp = CsrfError::Internal.error_response();
                             return Poll::Ready(Ok(req
                                 .into_response(resp)
                                 .map_into_boxed_body()
@@ -925,7 +1024,7 @@ where
                     };
 
                     if !valid {
-                        let resp = HttpResponse::BadRequest().body("Invalid CSRF token");
+                        let resp = CsrfError::TokenInvalid.error_response();
                         return Poll::Ready(Ok(req
                             .into_response(resp)
                             .map_into_boxed_body()
@@ -967,10 +1066,7 @@ where
                     Poll::Pending
                 } else {
                     error!("request already taken in csrf validator's state machine");
-
-                    Poll::Ready(Err(actix_web::error::ErrorInternalServerError(
-                        "Request was already taken",
-                    )))
+                    Poll::Ready(Err(CsrfError::Internal.into()))
                 }
             }
             CsrfTokenValidatorProj::ReadingBody {
@@ -985,9 +1081,7 @@ where
             } => {
                 if req.is_none() {
                     error!("request already taken in csrf validator's state machine");
-                    return Poll::Ready(Err(actix_web::error::ErrorInternalServerError(
-                        "Request was already taken",
-                    )));
+                    return Poll::Ready(Err(CsrfError::Internal.into()));
                 }
 
                 // Safe: just checked
@@ -996,9 +1090,7 @@ where
                     Some(p) => p,
                     None => {
                         error!("payload missing in reading body state");
-                        return Poll::Ready(Err(actix_web::error::ErrorInternalServerError(
-                            "Payload missing",
-                        )));
+                        return Poll::Ready(Err(CsrfError::Internal.into()));
                     }
                 };
 
@@ -1009,10 +1101,7 @@ where
 
                         if body_bytes.len() > config.max_body_bytes {
                             let req_owned = req.take().unwrap();
-                            let resp = HttpResponse::with_body(
-                                StatusCode::PAYLOAD_TOO_LARGE,
-                                "Request body too large for CSRF token extraction",
-                            );
+                            let resp = CsrfError::BodyTooLarge.error_response();
 
                             return Poll::Ready(Ok(req_owned
                                 .into_response(resp)
@@ -1025,7 +1114,15 @@ where
                         Poll::Pending
                     }
                     Poll::Ready(Some(Err(e))) => {
-                        Poll::Ready(Err(actix_web::error::ErrorBadRequest(e)))
+                        error!("failed to read request body for csrf extraction: {e:?}");
+
+                        let req_owned = req.take().unwrap();
+                        let resp = CsrfError::BodyRead.error_response();
+
+                        Poll::Ready(Ok(req_owned
+                            .into_response(resp)
+                            .map_into_boxed_body()
+                            .map_into_right_body()))
                     }
                     Poll::Ready(None) => {
                         let body = std::mem::take(&mut *body_bytes).freeze();
@@ -1037,7 +1134,8 @@ where
                             Some(token) => token,
                             None => {
                                 let req_owned = req.take().unwrap();
-                                let res = HttpResponse::BadRequest().body("CSRF token is required");
+                                let res = CsrfError::TokenMissing.error_response();
+
                                 return Poll::Ready(Ok(req_owned
                                     .into_response(res)
                                     .map_into_boxed_body()
@@ -1134,10 +1232,9 @@ where
                 let config = match &this.config {
                     Some(config) => config,
                     None => {
-                        let res = HttpResponse::InternalServerError()
-                            .body("An empty csrf middleware config passed into csrf response");
-
                         error!("unable to extract csrf middleware config in csrf response");
+
+                        let res = CsrfError::Internal.error_response();
                         return Poll::Ready(Ok(resp
                             .into_response(res)
                             .map_into_boxed_body()
@@ -1153,17 +1250,16 @@ where
                     match resp.response_mut().add_cookie(
                         &Cookie::build(CSRF_PRE_SESSION_KEY, cookie_val)
                             .http_only(PRE_SESSION_HTTP_ONLY)
-                            .secure(PRE_SESSION_SECURE)
+                            .secure(config.secure)
                             .same_site(PRE_SESSION_SAME_SITE)
                             .path("/")
                             .finish(),
                     ) {
                         Ok(_) => {}
                         Err(e) => {
-                            let res = HttpResponse::InternalServerError()
-                                .body("Unable to set pre-session cookie");
-
                             error!("unable to set pre-session cookie in csrf response: {e:?}");
+
+                            let res = CsrfError::Internal.error_response();
                             return Poll::Ready(Ok(resp
                                 .into_response(res)
                                 .map_into_boxed_body()
@@ -1175,20 +1271,13 @@ where
                 // If requested, clear pre-session cookie
                 // and anon token cookie.
                 if *this.remove_pre_session {
-                    // Expire pre-session
-                    let mut del = Cookie::new(CSRF_PRE_SESSION_KEY.to_string(), "");
-                    del.set_max_age(time::Duration::seconds(0));
-                    del.set_expires(time::OffsetDateTime::UNIX_EPOCH);
-                    del.set_path("/");
-                    del.set_http_only(PRE_SESSION_HTTP_ONLY);
-                    del.set_secure(PRE_SESSION_SECURE);
-                    del.set_same_site(PRE_SESSION_SAME_SITE);
-
-                    if let Err(e) = resp.response_mut().add_cookie(&del) {
-                        let res = HttpResponse::InternalServerError()
-                            .body("Failed to expire pre-session cookie");
-
+                    if let Err(e) = resp
+                        .response_mut()
+                        .add_cookie(&expired_pre_session_cookie(config.secure))
+                    {
                         error!("unable to expire pre-session cookie in csrf response: {e:?}");
+
+                        let res = CsrfError::Internal.error_response();
                         return Poll::Ready(Ok(resp
                             .into_response(res)
                             .map_into_boxed_body()
@@ -1197,16 +1286,13 @@ where
 
                     // Expire anonymous token cookie
                     if matches!(config.pattern, CsrfPattern::DoubleSubmitCookie) {
-                        let mut del_tok = Cookie::new(config.anon_token_cookie_name.clone(), "");
-                        del_tok.set_max_age(time::Duration::seconds(0));
-                        del_tok.set_expires(time::OffsetDateTime::UNIX_EPOCH);
-                        del_tok.set_path("/");
-
-                        if let Err(e) = resp.response_mut().add_cookie(&del_tok) {
-                            let res = HttpResponse::InternalServerError()
-                                .body("Failed to expire anon token cookie");
-
+                        if let Err(e) = resp.response_mut().add_cookie(&expire_cookie(
+                            &config.anon_token_cookie_name,
+                            config.secure,
+                        )) {
                             error!("unable to expire anon token cookie in csrf response: {e:?}");
+
+                            let res = CsrfError::Internal.error_response();
                             return Poll::Ready(Ok(resp
                                 .into_response(res)
                                 .map_into_boxed_body()
@@ -1242,12 +1328,9 @@ where
                             match resp.request().get_session().insert(key, new_token) {
                                 Ok(()) => {}
                                 Err(e) => {
-                                    let res = HttpResponse::with_body(
-                                        StatusCode::INTERNAL_SERVER_ERROR,
-                                        "Failed to insert CSRF token into session",
-                                    );
-
                                     error!("unable to set a csrf token with actix session in csrf response: {e:?}");
+
+                                    let res = CsrfError::Internal.error_response();
                                     return Poll::Ready(Ok(resp
                                         .into_response(res)
                                         .map_into_boxed_body()
@@ -1259,13 +1342,11 @@ where
                             let cookie_config = match &config.token_cookie_config {
                                 Some(config) => config,
                                 None => {
-                                    let res = HttpResponse::InternalServerError().body(
-                                        "An empty csrf cookie config passed into csrf response",
-                                    );
-
                                     error!(
                                         "unable to extract token_cookie_config in csrf response"
                                     );
+
+                                    let res = CsrfError::Internal.error_response();
                                     return Poll::Ready(Ok(resp
                                         .into_response(res)
                                         .map_into_boxed_body()
@@ -1282,7 +1363,7 @@ where
 
                             let new_token_cookie = Cookie::build(cookie_name, new_token)
                                 .http_only(cookie_config.http_only)
-                                .secure(cookie_config.secure)
+                                .secure(config.secure)
                                 .same_site(cookie_config.same_site)
                                 .path("/")
                                 .finish();
@@ -1291,10 +1372,9 @@ where
                             match resp.response_mut().add_cookie(&new_token_cookie) {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    let res = HttpResponse::InternalServerError()
-                                        .body("Failed to set a new csrf token");
-
                                     error!("unable to set a token cookie in csrf response: {e:?}");
+
+                                    let res = CsrfError::Internal.error_response();
                                     return Poll::Ready(Ok(resp
                                         .into_response(res)
                                         .map_into_boxed_body()
@@ -1346,9 +1426,10 @@ impl FromRequest for CsrfToken {
     fn from_request(req: &HttpRequest, _: &mut actix_web::dev::Payload) -> Self::Future {
         match req.extensions().get::<CsrfToken>() {
             Some(token) => ok(token.clone()),
-            None => err(actix_web::error::ErrorInternalServerError(
-                "CSRF middleware is not configured",
-            )),
+            None => {
+                error!("CsrfToken extracted without CsrfMiddleware installed");
+                err(CsrfError::Internal.into())
+            }
         }
     }
 }
@@ -1425,9 +1506,8 @@ fn config_from_request(req: &HttpRequest) -> Result<Rc<CsrfMiddlewareConfig>, Er
         .get::<Rc<CsrfMiddlewareConfig>>()
         .cloned()
         .ok_or_else(|| {
-            actix_web::error::ErrorInternalServerError(
-                "CSRF middleware config not found in request extensions",
-            )
+            error!("CSRF middleware config not found in request extensions");
+            CsrfError::Internal.into()
         })
 }
 
@@ -1498,10 +1578,10 @@ pub fn generate_random_token() -> String {
 /// and unforgeable by the client.
 ///
 /// `class` selects the logical bucket:
-/// - [`TokenClass::Authorized`]:
-///   bound to an authenticated session.
-/// - [`TokenClass::Anonymous`]: pre-session,
-///   used before authentication.
+/// - Authorized: bound to an authenticated
+///   session ([`TokenClass::Authorized`]).
+/// - Anonymous: pre-session, used before
+///   authentication ([`TokenClass::Anonymous`]).
 ///
 /// # Parameters
 /// - `class`: token namespace (authorized vs anonymous).
@@ -1699,19 +1779,19 @@ pub fn validate_hmac_token(session_id: &str, token: &[u8], secret: &[u8]) -> Res
 /// browser and the teardown is silently undone.
 struct CsrfTeardown;
 
-fn expire_cookie(name: &str) -> Cookie<'static> {
+fn expire_cookie(name: &str, secure: bool) -> Cookie<'static> {
     let mut del = Cookie::new(name.to_owned(), "");
     del.set_max_age(time::Duration::seconds(0));
     del.set_expires(time::OffsetDateTime::UNIX_EPOCH);
     del.set_path("/");
+    del.set_secure(secure);
 
     del
 }
 
-fn expired_pre_session_cookie() -> Cookie<'static> {
-    let mut del = expire_cookie(CSRF_PRE_SESSION_KEY);
+fn expired_pre_session_cookie(secure: bool) -> Cookie<'static> {
+    let mut del = expire_cookie(CSRF_PRE_SESSION_KEY, secure);
     del.set_http_only(PRE_SESSION_HTTP_ONLY);
-    del.set_secure(PRE_SESSION_SECURE);
     del.set_same_site(PRE_SESSION_SAME_SITE);
 
     del
@@ -1740,7 +1820,7 @@ pub fn rotate_csrf_after_login(
     resp: &mut HttpResponseBuilder,
     config: &CsrfMiddlewareConfig,
 ) -> Result<(), Error> {
-    resp.cookie(expired_pre_session_cookie());
+    resp.cookie(expired_pre_session_cookie(config.secure));
 
     match config.pattern {
         #[cfg(feature = "actix-session")]
@@ -1765,20 +1845,20 @@ pub fn rotate_csrf_after_login(
                 config.secret_key.as_slice(),
             );
 
-            let (http_only, secure, same_site) = match &config.token_cookie_config {
-                Some(cfg) => (cfg.http_only, cfg.secure, cfg.same_site),
-                None => (true, true, SameSite::Lax),
+            let (http_only, same_site) = match &config.token_cookie_config {
+                Some(cfg) => (cfg.http_only, cfg.same_site),
+                None => (true, SameSite::Lax),
             };
 
             let csrf_cookie = Cookie::build(&config.token_cookie_name, token)
                 .http_only(http_only)
-                .secure(secure)
+                .secure(config.secure)
                 .same_site(same_site)
                 .path("/")
                 .finish();
 
             resp.cookie(csrf_cookie);
-            resp.cookie(expire_cookie(&config.anon_token_cookie_name));
+            resp.cookie(expire_cookie(&config.anon_token_cookie_name, config.secure));
 
             Ok(())
         }
@@ -1816,7 +1896,7 @@ pub fn rotate_csrf_after_logout(
 ) -> Result<(), Error> {
     req.extensions_mut().insert(CsrfTeardown);
 
-    resp.cookie(expired_pre_session_cookie());
+    resp.cookie(expired_pre_session_cookie(config.secure));
 
     match config.pattern {
         #[cfg(feature = "actix-session")]
@@ -1824,9 +1904,9 @@ pub fn rotate_csrf_after_logout(
             req.get_session().purge();
         }
         CsrfPattern::DoubleSubmitCookie => {
-            resp.cookie(expire_cookie(&config.session_id_cookie_name));
-            resp.cookie(expire_cookie(&config.token_cookie_name));
-            resp.cookie(expire_cookie(&config.anon_token_cookie_name));
+            resp.cookie(expire_cookie(&config.session_id_cookie_name, config.secure));
+            resp.cookie(expire_cookie(&config.token_cookie_name, config.secure));
+            resp.cookie(expire_cookie(&config.anon_token_cookie_name, config.secure));
         }
     }
 
