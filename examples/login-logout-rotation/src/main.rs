@@ -44,7 +44,11 @@ async fn login_form(csrf: CsrfToken) -> impl Responder {
     let html = format!(
         r#"<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>CSRF Rotation Demo</title></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CSRF Rotation Demo</title>
+</head>
 <body>
   <h1>Rotate CSRF token after login</h1>
   <section style="max-width:460px;">
@@ -59,6 +63,12 @@ async fn login_form(csrf: CsrfToken) -> impl Responder {
     <form style="display:flex;flex-direction:column;" method="post" action="/login">
       <input hidden type="text" name="{field}" value="{token}" />
       <button type="submit">Login</button>
+    </form>
+    <p>No ErrorHandlers here, so a forged token shows
+       the crate's default JSON rejection:</p>
+    <form style="display:flex;flex-direction:column;" method="post" action="/login">
+      <input hidden type="text" name="{field}" value="forged-token-not-an-hmac" />
+      <button type="submit">Login (invalid)</button>
     </form>
   </section>
 </body>
@@ -76,7 +86,7 @@ async fn authorized_page(csrf: CsrfToken) -> impl Responder {
     let html = format!(
         r#"<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>CSRF Rotation Demo</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CSRF Rotation Demo</title></head>
 <body>
   <h1>Authorized page</h1>
   <section style="max-width:460px;">
@@ -99,10 +109,12 @@ async fn authorized_page(csrf: CsrfToken) -> impl Responder {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Example-only secret. Do not use in production.
-    let secret = b"example-secret-key-please-change-32+bytes";
-    let csrf_config = CsrfMiddlewareConfig::double_submit_cookie(secret);
+    let secret = b"example-rotation-secret-please-change-32+bytes";
 
-    println!("Starting actix web at http://localhost:8080...");
+    // secure=false: demo serves plain HTTP.
+    let csrf_config = CsrfMiddlewareConfig::double_submit_cookie(secret).with_secure(false);
+
+    println!("Starting actix web at http://localhost:8082...");
 
     HttpServer::new(move || {
         App::new()
@@ -113,7 +125,7 @@ async fn main() -> std::io::Result<()> {
             .route("/logout", web::post().to(logout_handler))
             .route("/page", web::get().to(authorized_page))
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("127.0.0.1", 8082))?
     .run()
     .await
 }
