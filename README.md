@@ -1,8 +1,8 @@
 # actix-csrf-middleware
 
-[![CI](https://github.com/yoozzeek/actix-csrf-middleware/actions/workflows/ci.yml/badge.svg)](https://github.com/yoozzeek/actix-csrf-middleware/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/actix-csrf-middleware.svg)](https://crates.io/crates/actix-csrf-middleware)
 [![Docs.rs](https://docs.rs/actix-csrf-middleware/badge.svg)](https://docs.rs/actix-csrf-middleware)
+[![CI](https://github.com/yoozzeek/actix-csrf-middleware/actions/workflows/ci.yml/badge.svg)](https://github.com/yoozzeek/actix-csrf-middleware/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 CSRF protection middleware for [Actix Web](https://github.com/actix/actix-web) applications. Supports double submit
@@ -28,11 +28,59 @@ for production use.
     - `application/json`
     - `application/x-www-form-urlencoded`
 - Configurable cookie, header, and form field names
+- Graceful, typed error handling: every rejection is a `CsrfError` rendered by default as
+  `{"error":"<code>"}` (JSON, correct status) with stable machine-readable codes. The typed value is stored in
+  the response extensions, so an actix `ErrorHandlers` can recover it and re-render in your own shape (HTML, JSON,
+  problem+json). Internal faults are logged server-side and never leak details to the client.
 - Optional Origin/Referer enforcement for mutating requests (configurable)
 - Helpers for manually extracting and validating CSRF tokens at the handler level are useful for processing
   `multipart/form-data` requests without expensive body reading in middleware
 - Enabled by default for all mutating (`POST`,`PUT`,`PATCH`,`DELETE`) http requests; supports per-path CSRF exclusion
   via `skip_for`.
+
+## Quick start
+
+Dependencies:
+
+```toml
+[dependencies]
+actix-web = "4"
+actix-csrf-middleware = "0.6"
+```
+
+Code:
+
+```rust
+use actix_csrf_middleware::{CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken};
+use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+
+async fn form(csrf: CsrfToken) -> impl Responder {
+    HttpResponse::Ok().body(format!("csrf token: {}", csrf.0))
+}
+
+async fn submit() -> impl Responder {
+    // Runs only after the CSRF token is verified.
+    HttpResponse::Ok().body("accepted")
+}
+
+#[actix_web::main] // or #[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // >= 32 bytes; load from your config in production.
+    let secret = b"replace-me-with-a-32+byte-application-secret";
+
+    HttpServer::new(move || {
+        // Constant secret, so tokens validate across workers.
+        let config = CsrfMiddlewareConfig::double_submit_cookie(secret);
+        App::new()
+            .wrap(CsrfMiddleware::new(config))
+            .route("/", web::get().to(form))
+            .route("/submit", web::post().to(submit))
+    })
+        .bind(("127.0.0.1", 8080))?
+        .run()
+        .await
+}
+```
 
 ## Examples
 
@@ -40,8 +88,8 @@ Minimal runnable examples are provided in the examples directory:
 
 - Double Submit Cookie: [examples/double-submit-cookie](examples/double-submit-cookie)
 - Synchronizer Token (requires `actix-session`): [examples/synchronizer-token](examples/synchronizer-token)
-- Rotation After Auth (Double Submit Cookie + RequestExt
-  rotate): [examples/rotation-after-auth](examples/rotation-after-auth)
+- Login/Logout Rotation (Double Submit Cookie + RequestExt
+  rotate): [examples/login-logout-rotation](examples/login-logout-rotation)
 
 ## License
 
