@@ -12,5 +12,5 @@ Minimal Actix Web example demonstrating CSRF token rotation after successful aut
 Run:
 
 ```
-cargo run --manifest-path examples/rotation-after-auth/Cargo.toml
+cargo run --manifest-path examples/login-logout-rotation/Cargo.toml
 ```
