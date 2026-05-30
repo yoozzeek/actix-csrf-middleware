@@ -3,7 +3,8 @@ mod common;
 
 use actix_csrf_middleware::{
     CsrfMiddleware, CsrfMiddlewareConfig, CsrfRequestExt, CSRF_PRE_SESSION_KEY,
-    DEFAULT_CSRF_TOKEN_HEADER, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY,
+    DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_HEADER, DEFAULT_CSRF_TOKEN_KEY,
+    DEFAULT_SESSION_ID_KEY,
 };
 use actix_http::body::{BoxBody, EitherBody};
 use actix_http::Request;
@@ -24,6 +25,7 @@ async fn build_app_with_auth(
 {
     test::init_service({
         let app = App::new().wrap(CsrfMiddleware::new(cfg));
+
         #[cfg(feature = "actix-session")]
         let app = app.wrap(
             SessionMiddleware::builder(CookieSessionStore::default(), Key::generate())
@@ -34,11 +36,14 @@ async fn build_app_with_auth(
                 .cookie_same_site(SameSite::Lax)
                 .build(),
         );
-        app.configure(common::configure_routes).service(
-            web::resource("/auth")
-                .route(web::get().to(auth_handler))
-                .route(web::post().to(auth_handler)),
-        )
+
+        app.configure(common::configure_routes)
+            .service(
+                web::resource("/auth")
+                    .route(web::get().to(auth_handler))
+                    .route(web::post().to(auth_handler)),
+            )
+            .service(web::resource("/logout").route(web::post().to(logout_handler)))
     })
     .await
 }
@@ -50,7 +55,14 @@ async fn auth_handler(req: HttpRequest) -> actix_web::Result<HttpResponse> {
         .unwrap_or_else(|| "missing-session-id".to_string());
 
     let mut resp = HttpResponse::Ok();
-    req.rotate_csrf_token_in_response(&session_id, &mut resp)?;
+    req.rotate_csrf_after_login(&session_id, &mut resp)?;
+
+    Ok(resp.finish())
+}
+
+async fn logout_handler(req: HttpRequest) -> actix_web::Result<HttpResponse> {
+    let mut resp = HttpResponse::Ok();
+    req.rotate_csrf_after_logout(&mut resp)?;
 
     Ok(resp.finish())
 }
@@ -135,6 +147,76 @@ async fn rotates_token_via_request_ext_double_submit_cookie() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+#[actix_web::test]
+async fn tears_down_csrf_state_on_logout_double_submit_cookie() {
+    let cfg = CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key());
+    let app = build_app_with_auth(cfg).await;
+
+    let session_cookie = Cookie::build(DEFAULT_SESSION_ID_KEY, "SID-LOGOUT")
+        .path("/")
+        .finish();
+
+    // Obtain an authorized token bound to the session
+    let req = test::TestRequest::get()
+        .uri("/form")
+        .cookie(session_cookie.clone())
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert!(resp.status().is_success());
+
+    let auth_token_cookie = resp
+        .response()
+        .cookies()
+        .find(|c| c.name() == DEFAULT_CSRF_TOKEN_KEY)
+        .map(|c| c.into_owned())
+        .expect("authorized token cookie present");
+    let auth_token = auth_token_cookie.value().to_string();
+
+    // Logout via POST carrying the authorized token
+    // (logout forms ship the CSRF token).
+    let req = test::TestRequest::post()
+        .uri("/logout")
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, auth_token))
+        .cookie(auth_token_cookie)
+        .cookie(session_cookie)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let expired = |name: &str| {
+        resp.response()
+            .cookies()
+            .any(|c| c.name() == name && c.max_age() == Some(time::Duration::seconds(0)))
+    };
+    assert!(
+        expired(DEFAULT_SESSION_ID_KEY),
+        "session id cookie must be expired on logout"
+    );
+    assert!(
+        expired(DEFAULT_CSRF_TOKEN_KEY),
+        "authorized token cookie must be expired on logout"
+    );
+    assert!(
+        expired(DEFAULT_CSRF_ANON_TOKEN_KEY),
+        "anon token cookie must be expired on logout"
+    );
+    assert!(
+        expired(CSRF_PRE_SESSION_KEY),
+        "pre-session cookie must be expired on logout"
+    );
+
+    // The middleware's post-mutation refresh must not re-issue
+    // a live authorized token, which would undo the teardown
+    // via a later Set-Cookie.
+    let reissued_live_auth = resp.response().cookies().any(|c| {
+        c.name() == DEFAULT_CSRF_TOKEN_KEY && c.max_age() != Some(time::Duration::seconds(0))
+    });
+    assert!(
+        !reissued_live_auth,
+        "middleware must not re-issue an authorized token cookie during logout teardown"
+    );
+}
+
 #[cfg(feature = "actix-session")]
 #[actix_web::test]
 async fn rotates_token_via_request_ext_synchronizer() {
@@ -202,4 +284,52 @@ async fn rotates_token_via_request_ext_synchronizer() {
         .to_request();
     let resp = test::call_service(&app, req).await;
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[cfg(feature = "actix-session")]
+#[actix_web::test]
+async fn tears_down_csrf_state_on_logout_synchronizer() {
+    let cfg = CsrfMiddlewareConfig::synchronizer_token(&get_secret_key());
+    let app = build_app_with_auth(cfg).await;
+
+    // Establish an authorized session and token
+    let req = test::TestRequest::get().uri("/form").to_request();
+    let resp = test::call_service(&app, req).await;
+    let session_cookie = resp
+        .response()
+        .cookies()
+        .find(|c| c.name() == DEFAULT_SESSION_ID_KEY)
+        .map(|c| c.into_owned())
+        .expect("session cookie present");
+    let body = test::read_body(resp).await;
+    let token = String::from_utf8(body.to_vec()).unwrap();
+    let token = token.strip_prefix("token:").unwrap().to_string();
+
+    // Logout via POST carrying the authorized token
+    let req = test::TestRequest::post()
+        .uri("/logout")
+        .insert_header((DEFAULT_CSRF_TOKEN_HEADER, token))
+        .cookie(session_cookie)
+        .to_request();
+    let resp = test::call_service(&app, req).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // purge() must expire the session cookie and
+    // the middleware its pre-session marker.
+    let session_removed = resp
+        .response()
+        .cookies()
+        .any(|c| c.name() == DEFAULT_SESSION_ID_KEY && c.value().is_empty());
+    assert!(
+        session_removed,
+        "purge must emit a removal Set-Cookie for the session"
+    );
+
+    let pre_session_expired = resp.response().cookies().any(|c| {
+        c.name() == CSRF_PRE_SESSION_KEY && c.max_age() == Some(time::Duration::seconds(0))
+    });
+    assert!(
+        pre_session_expired,
+        "pre-session cookie must be expired on logout"
+    );
 }

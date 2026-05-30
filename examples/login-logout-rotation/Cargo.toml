@@ -1,5 +1,5 @@
 [package]
-name = "actix-csrf-middleware-example-rotation"
+name = "example-token-rotation"
 version = "0.1.0"
 edition = "2021"
 

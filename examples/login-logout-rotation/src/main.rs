@@ -2,10 +2,11 @@ use actix_csrf_middleware::{
     CsrfMiddleware, CsrfMiddlewareConfig, CsrfRequestExt, CsrfToken, DEFAULT_CSRF_TOKEN_FIELD,
     DEFAULT_SESSION_ID_KEY,
 };
-use actix_web::cookie::{time, Cookie};
+use actix_web::cookie::Cookie;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, Responder};
 
-// Simulate login by issuing a session id cookie, then redirect to /form
+// Issue a session id cookie, upgrade the
+// CSRF token to authorized, redirect to /page.
 async fn login_handler(req: HttpRequest) -> actix_web::Result<HttpResponse> {
     let session_id = "auth-session-id";
 
@@ -17,23 +18,22 @@ async fn login_handler(req: HttpRequest) -> actix_web::Result<HttpResponse> {
     // Set session cookie first
     resp.cookie(session_cookie);
 
-    // Then rotate token
-    req.rotate_csrf_token_in_response(session_id, &mut resp)?;
+    // Upgrade anonymous CSRF state
+    // to authorized for the new session.
+    req.rotate_csrf_after_login(session_id, &mut resp)?;
 
     resp.append_header((actix_web::http::header::LOCATION, "/page"));
 
     Ok(resp.finish())
 }
 
-async fn logout_handler() -> actix_web::Result<HttpResponse> {
+async fn logout_handler(req: HttpRequest) -> actix_web::Result<HttpResponse> {
     let mut resp = HttpResponse::SeeOther();
 
-    // Delete session id cookie
-    let mut del = Cookie::new(DEFAULT_SESSION_ID_KEY.to_string(), "");
-    del.set_max_age(time::Duration::seconds(0));
-    del.set_expires(time::OffsetDateTime::UNIX_EPOCH);
-    del.set_path("/");
-    resp.cookie(del);
+    // Tear down the session and CSRF state.
+    // The next anonymous GET re-mints a fresh
+    // pre-session / CSRF-ANON pair via the middleware.
+    req.rotate_csrf_after_logout(&mut resp)?;
 
     resp.append_header((actix_web::http::header::LOCATION, "/"));
 
@@ -44,7 +44,11 @@ async fn login_form(csrf: CsrfToken) -> impl Responder {
     let html = format!(
         r#"<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>CSRF Rotation Demo</title></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CSRF Rotation Demo</title>
+</head>
 <body>
   <h1>Rotate CSRF token after login</h1>
   <section style="max-width:460px;">
@@ -52,13 +56,19 @@ async fn login_form(csrf: CsrfToken) -> impl Responder {
     <p>
         Middleware generates pre-session and CSRF token of anonynous class to this operation.
         After sucessfull login (or registration) set session id as usually and call
-        rotate_csrf_token_in_response to trigger CSRF token rotation. It will securly
+        rotate_csrf_after_login to trigger CSRF token rotation. It will securly
         rotate previous anonynous token with authorized one that can be used on CSRF protected routes.
     </p>
     <p><code>{token}</code></p>
     <form style="display:flex;flex-direction:column;" method="post" action="/login">
       <input hidden type="text" name="{field}" value="{token}" />
       <button type="submit">Login</button>
+    </form>
+    <p>No ErrorHandlers here, so a forged token shows
+       the crate's default JSON rejection:</p>
+    <form style="display:flex;flex-direction:column;" method="post" action="/login">
+      <input hidden type="text" name="{field}" value="forged-token-not-an-hmac" />
+      <button type="submit">Login (invalid)</button>
     </form>
   </section>
 </body>
@@ -76,7 +86,7 @@ async fn authorized_page(csrf: CsrfToken) -> impl Responder {
     let html = format!(
         r#"<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>CSRF Rotation Demo</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CSRF Rotation Demo</title></head>
 <body>
   <h1>Authorized page</h1>
   <section style="max-width:460px;">
@@ -99,10 +109,12 @@ async fn authorized_page(csrf: CsrfToken) -> impl Responder {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Example-only secret. Do not use in production.
-    let secret = b"example-secret-key-please-change-32+bytes";
-    let csrf_config = CsrfMiddlewareConfig::double_submit_cookie(secret);
+    let secret = b"example-rotation-secret-please-change-32+bytes";
 
-    println!("Starting actix web at http://localhost:8080...");
+    // secure=false: demo serves plain HTTP.
+    let csrf_config = CsrfMiddlewareConfig::double_submit_cookie(secret).with_secure(false);
+
+    println!("Starting actix web at http://localhost:8082...");
 
     HttpServer::new(move || {
         App::new()
@@ -113,7 +125,7 @@ async fn main() -> std::io::Result<()> {
             .route("/logout", web::post().to(logout_handler))
             .route("/page", web::get().to(authorized_page))
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("127.0.0.1", 8082))?
     .run()
     .await
 }
