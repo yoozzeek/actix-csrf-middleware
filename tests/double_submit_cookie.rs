@@ -274,15 +274,16 @@ async fn custom_config_header_name() {
         anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
             http_only: false,
-            secure: true,
             same_site: SameSite::Lax,
         }),
         secret_key: get_secret_key().into(),
         skip_for: vec![],
+        secure: true,
         enforce_origin: false,
         allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
     };
+    
     let app = build_app(cfg).await;
     let (token, token_cookie, session_id_cookie) = { token_cookie(&app, None, None).await };
 
@@ -312,11 +313,11 @@ async fn custom_config_cookie_name() {
         anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
             http_only: false,
-            secure: true,
             same_site: SameSite::Lax,
         }),
         secret_key: get_secret_key().into(),
         skip_for: vec![],
+        secure: true,
         enforce_origin: false,
         allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
@@ -351,11 +352,11 @@ async fn custom_config_form_field_name() {
         anon_session_key_name: format!("{}-anon", DEFAULT_CSRF_TOKEN_KEY),
         token_cookie_config: Some(CsrfDoubleSubmitCookie {
             http_only: false,
-            secure: true,
             same_site: SameSite::Lax,
         }),
         secret_key: get_secret_key().into(),
         skip_for: vec![],
+        secure: true,
         enforce_origin: false,
         allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
