@@ -1,6 +1,6 @@
 [package]
 name = "actix-csrf-middleware"
-version = "0.5.4"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
 authors = ["Andrew <zeek@tuta.com>"]
@@ -8,7 +8,7 @@ repository = "https://github.com/yoozzeek/actix-csrf-middleware"
 keywords = ["security", "csrf", "web", "middleware", "actix-web"]
 description = "CSRF protection middleware for Actix Web applications. Supports double submit cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to configure, and includes test coverage for common attacks and edge cases."
 documentation = "https://docs.rs/actix-csrf-middleware"
-rust-version = "1.70.0"
+rust-version = "1.88.0"
 exclude = ["examples/**"]
 
 [lib]
@@ -19,25 +19,24 @@ session = ["actix-session"]
 
 [dependencies]
 actix-web = { version = "4", features = ["compat", "secure-cookies"] }
-actix-session = { version = "0.10", optional = true, features = ["cookie-session"] }
-actix-utils = "3.0.1"
-actix-http = "3.10"
-base64 = "0.22.1"
-futures-util = "0.3.31"
-pin-project-lite = "0.2.16"
-rand = "0.9.1"
-sha2 = "0.10"
-hmac = "0.12"
-hex = "0.4.3"
+actix-session = { version = "0.11", optional = true, features = ["cookie-session"] }
+actix-utils = "3"
+actix-http = "3"
+base64 = "0.22"
+futures-util = "0.3"
+pin-project-lite = "0.2"
+rand = "0.10"
+sha2 = "0.11"
+hmac = "0.13"
+hex = "0.4"
 subtle = "2.6"
-serde_json = "1.0.140"
-serde_urlencoded = "0.7.1"
-log = "0.4.27"
+serde_json = "1.0"
+serde_urlencoded = "0.7"
+log = "0.4"
 url = "2.5"
 zeroize = "1"
 
 [dev-dependencies]
-criterion = "0.5"
-actix-rt = "2.10"
-actix-multipart = "0.7.2"
-proptest = "1.4"
+actix-rt = "2"
+actix-multipart = "0.7"
+proptest = "1"
