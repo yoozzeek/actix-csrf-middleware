@@ -9,8 +9,11 @@ CSRF protection middleware for [Actix Web](https://github.com/actix/actix-web) a
 cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to configure, and includes
 test coverage for common attacks and edge cases.
 
-**WARNING:** This crate has not been audited and may contain bugs and security flaws. This implementation is NOT ready
-for production use.
+## ⚠️ Security Warning
+
+This crate has not been audited and may contain bugs and security flaws.
+
+USE AT YOUR OWN RISK!
 
 ## Overview
 
@@ -86,10 +89,10 @@ async fn main() -> std::io::Result<()> {
 
 Minimal runnable examples are provided in the examples directory:
 
-- Double Submit Cookie: [examples/double-submit-cookie](examples/double-submit-cookie)
-- Synchronizer Token (requires `actix-session`): [examples/synchronizer-token](examples/synchronizer-token)
-- Login/Logout Rotation (Double Submit Cookie + RequestExt
-  rotate): [examples/login-logout-rotation](examples/login-logout-rotation)
+- [Double Submit Cookie](examples/double-submit-cookie)
+- [Synchronizer Token (requires `actix-session`)](examples/synchronizer-token)
+- [Login/Logout Rotation (Double Submit Cookie + RequestExt
+  rotate)](examples/login-logout-rotation)
 
 ## License
 
