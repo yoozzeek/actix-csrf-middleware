@@ -6,10 +6,10 @@ use actix_csrf_middleware::{
 };
 use actix_http::body::{EitherBody, MessageBody};
 use actix_web::dev::ServiceResponse;
-use actix_web::http::header::{self, HeaderName, HeaderValue};
 use actix_web::http::StatusCode;
+use actix_web::http::header::{self, HeaderName, HeaderValue};
 use actix_web::middleware::{ErrorHandlerResponse, ErrorHandlers};
-use actix_web::{test, web, App, HttpResponse};
+use actix_web::{App, HttpResponse, test, web};
 
 fn get_secret_key() -> Vec<u8> {
     b"super-secret-super-secret-super-secret-xx".to_vec()

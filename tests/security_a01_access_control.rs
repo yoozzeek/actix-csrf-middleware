@@ -2,8 +2,8 @@
 mod common;
 
 use actix_csrf_middleware::{CsrfPattern, DEFAULT_CSRF_TOKEN_HEADER};
-use actix_http::body::{BoxBody, EitherBody};
 use actix_http::Request;
+use actix_http::body::{BoxBody, EitherBody};
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::test;
 

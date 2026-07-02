@@ -2,21 +2,21 @@
 mod common;
 
 use actix_csrf_middleware::{
-    CsrfMiddleware, CsrfMiddlewareConfig, CsrfRequestExt, CSRF_PRE_SESSION_KEY,
+    CSRF_PRE_SESSION_KEY, CsrfMiddleware, CsrfMiddlewareConfig, CsrfRequestExt,
     DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_HEADER, DEFAULT_CSRF_TOKEN_KEY,
     DEFAULT_SESSION_ID_KEY,
 };
-use actix_http::body::{BoxBody, EitherBody};
 use actix_http::Request;
+use actix_http::body::{BoxBody, EitherBody};
 #[cfg(feature = "actix-session")]
 use actix_session::{
-    config::CookieContentSecurity, storage::CookieSessionStore, SessionMiddleware,
+    SessionMiddleware, config::CookieContentSecurity, storage::CookieSessionStore,
 };
-use actix_web::cookie::{time, Cookie};
+use actix_web::cookie::{Cookie, time};
 #[cfg(feature = "actix-session")]
 use actix_web::cookie::{Key, SameSite};
 use actix_web::dev::{Service, ServiceResponse};
-use actix_web::{http::StatusCode, test, web, App, HttpRequest, HttpResponse};
+use actix_web::{App, HttpRequest, HttpResponse, http::StatusCode, test, web};
 
 // Build app with CsrfMiddleware and an extra "/auth" route that calls the extension helper
 async fn build_app_with_auth(
@@ -112,11 +112,11 @@ async fn rotates_token_via_request_ext_double_submit_cookie() {
     let mut new_auth_cookie: Option<Cookie<'static>> = None;
 
     for c in auth_resp.response().cookies() {
-        if c.name() == CSRF_PRE_SESSION_KEY {
-            if let Some(ma) = c.max_age() {
-                assert_eq!(ma, time::Duration::seconds(0));
-                saw_expired_pre_session = true;
-            }
+        if c.name() == CSRF_PRE_SESSION_KEY
+            && let Some(ma) = c.max_age()
+        {
+            assert_eq!(ma, time::Duration::seconds(0));
+            saw_expired_pre_session = true;
         }
 
         if c.name() == DEFAULT_CSRF_TOKEN_KEY {

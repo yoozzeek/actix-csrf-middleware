@@ -2,8 +2,8 @@
 mod common;
 
 use actix_csrf_middleware::{CsrfPattern, DEFAULT_CSRF_TOKEN_HEADER};
-use actix_http::body::{BoxBody, EitherBody};
 use actix_http::Request;
+use actix_http::body::{BoxBody, EitherBody};
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::http::header::ContentType;
 use actix_web::test;
@@ -301,9 +301,11 @@ where
                 43,
                 "random part must be 43 chars (32B b64url)"
             );
-            assert!(csrf_token
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+            assert!(
+                csrf_token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            );
         }
         #[cfg(feature = "actix-session")]
         CsrfPattern::SynchronizerToken => {
@@ -316,9 +318,11 @@ where
                 !token.contains('.'),
                 "synchronizer token must not contain dot"
             );
-            assert!(token
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+            assert!(
+                token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            );
         }
     }
 }

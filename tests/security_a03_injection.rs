@@ -2,7 +2,7 @@
 mod common;
 
 use actix_csrf_middleware::{CsrfPattern, DEFAULT_CSRF_TOKEN_FIELD, DEFAULT_CSRF_TOKEN_HEADER};
-use actix_web::{http::header::ContentType, http::StatusCode, test};
+use actix_web::{http::StatusCode, http::header::ContentType, test};
 use serde_json::json;
 
 use common::*;
@@ -14,12 +14,12 @@ fn get_secret_key() -> Vec<u8> {
 async fn case_sql_injection_in_csrf_token<S>(pattern: CsrfPattern, app: &S)
 where
     S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<
-            actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<
+                actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            >,
+            Error = actix_web::Error,
         >,
-        Error = actix_web::Error,
-    >,
 {
     let (_token, cookies) = token_and_cookies_for(app, &pattern).await;
     let payloads = vec![
@@ -45,12 +45,12 @@ where
 async fn case_xss_injection_in_csrf_forms<S>(pattern: CsrfPattern, app: &S)
 where
     S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<
-            actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<
+                actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            >,
+            Error = actix_web::Error,
         >,
-        Error = actix_web::Error,
-    >,
 {
     let (_token, cookies) = token_and_cookies_for(app, &pattern).await;
     let payloads = vec![
@@ -89,12 +89,12 @@ where
 async fn case_command_injection_in_csrf_token<S>(pattern: CsrfPattern, app: &S)
 where
     S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<
-            actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<
+                actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            >,
+            Error = actix_web::Error,
         >,
-        Error = actix_web::Error,
-    >,
 {
     let (_token, cookies) = token_and_cookies_for(app, &pattern).await;
     let payloads = vec![
@@ -121,12 +121,12 @@ where
 async fn case_nosql_injection_in_json_csrf<S>(pattern: CsrfPattern, app: &S)
 where
     S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<
-            actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<
+                actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            >,
+            Error = actix_web::Error,
         >,
-        Error = actix_web::Error,
-    >,
 {
     let (_token, cookies) = token_and_cookies_for(app, &pattern).await;
     let payloads = vec![
@@ -152,12 +152,12 @@ where
 async fn case_ldap_injection_in_csrf_token<S>(pattern: CsrfPattern, app: &S)
 where
     S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<
-            actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<
+                actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            >,
+            Error = actix_web::Error,
         >,
-        Error = actix_web::Error,
-    >,
 {
     let (_token, cookies) = token_and_cookies_for(app, &pattern).await;
     let payloads = vec![
@@ -183,12 +183,12 @@ where
 async fn case_path_traversal_injection<S>(pattern: CsrfPattern, app: &S)
 where
     S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<
-            actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<
+                actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            >,
+            Error = actix_web::Error,
         >,
-        Error = actix_web::Error,
-    >,
 {
     let (_token, cookies) = token_and_cookies_for(app, &pattern).await;
     let payloads = vec![
@@ -214,12 +214,12 @@ where
 async fn case_null_byte_injection<S>(pattern: CsrfPattern, app: &S)
 where
     S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<
-            actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<
+                actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            >,
+            Error = actix_web::Error,
         >,
-        Error = actix_web::Error,
-    >,
 {
     let (_token, cookies) = token_and_cookies_for(app, &pattern).await;
     let payloads = vec![
@@ -246,12 +246,12 @@ where
 async fn case_header_injection_csrf<S>(pattern: CsrfPattern, app: &S)
 where
     S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<
-            actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<
+                actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            >,
+            Error = actix_web::Error,
         >,
-        Error = actix_web::Error,
-    >,
 {
     let (_token, cookies) = token_and_cookies_for(app, &pattern).await;
     let payloads = vec![

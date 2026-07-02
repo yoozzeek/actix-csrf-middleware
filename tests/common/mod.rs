@@ -1,18 +1,18 @@
 use actix_csrf_middleware::{
-    CsrfMiddleware, CsrfMiddlewareConfig, CsrfPattern, CsrfToken, CSRF_PRE_SESSION_KEY,
+    CSRF_PRE_SESSION_KEY, CsrfMiddleware, CsrfMiddlewareConfig, CsrfPattern, CsrfToken,
     DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY,
 };
-use actix_http::body::{BoxBody, EitherBody};
 use actix_http::Request;
+use actix_http::body::{BoxBody, EitherBody};
 #[cfg(feature = "actix-session")]
 use actix_session::{
-    config::CookieContentSecurity, storage::CookieSessionStore, SessionMiddleware,
+    SessionMiddleware, config::CookieContentSecurity, storage::CookieSessionStore,
 };
 use actix_web::cookie::Cookie;
 #[cfg(feature = "actix-session")]
 use actix_web::cookie::{Key, SameSite};
 use actix_web::dev::{Service, ServiceResponse};
-use actix_web::{test, web, App, HttpResponse};
+use actix_web::{App, HttpResponse, test, web};
 use hmac::Hmac;
 use sha2::Sha256;
 
@@ -150,7 +150,7 @@ where
 // Macro to generate tests for both CSRF patterns
 #[allow(unused_macros)]
 macro_rules! for_patterns {
-    ($name_double:ident, $name_sync:ident, $body:expr) => {
+    ($name_double:ident, $name_sync:ident, $body:expr_2021) => {
         #[actix_web::test]
         async fn $name_double() {
             let cfg = common::config_for_with_secret(

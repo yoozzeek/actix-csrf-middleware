@@ -1,7 +1,7 @@
 use actix_csrf_middleware::{
     CsrfMiddleware, CsrfMiddlewareConfig, CsrfPattern, DEFAULT_CSRF_TOKEN_FIELD,
 };
-use actix_web::{test, web, App, HttpResponse};
+use actix_web::{App, HttpResponse, test, web};
 
 mod common;
 

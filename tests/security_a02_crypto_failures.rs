@@ -1,8 +1,8 @@
 mod common;
 
 use actix_csrf_middleware::{
-    generate_hmac_token_ctx, validate_hmac_token, CsrfMiddlewareConfig, TokenClass,
-    DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_HEADER,
+    CsrfMiddlewareConfig, DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_HEADER, TokenClass,
+    generate_hmac_token_ctx, validate_hmac_token,
 };
 use actix_web::{http::StatusCode, test};
 use common::*;
@@ -175,12 +175,12 @@ pub async fn token_cookie<S>(
 )
 where
     S: actix_web::dev::Service<
-        actix_http::Request,
-        Response = actix_web::dev::ServiceResponse<
-            actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<
+                actix_http::body::EitherBody<actix_http::body::BoxBody>,
+            >,
+            Error = actix_web::Error,
         >,
-        Error = actix_web::Error,
-    >,
 {
     use actix_csrf_middleware::{
         CSRF_PRE_SESSION_KEY, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY,

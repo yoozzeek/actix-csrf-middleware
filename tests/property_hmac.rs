@@ -1,4 +1,4 @@
-use actix_csrf_middleware::{generate_hmac_token_ctx, validate_hmac_token_ctx, TokenClass};
+use actix_csrf_middleware::{TokenClass, generate_hmac_token_ctx, validate_hmac_token_ctx};
 use proptest::prelude::*;
 use proptest::sample::select;
 
