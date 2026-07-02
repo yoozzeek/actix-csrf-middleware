@@ -1,19 +1,19 @@
-use actix_http::{header::HeaderMap, StatusCode};
+use actix_http::{StatusCode, header::HeaderMap};
 #[cfg(feature = "actix-session")]
 use actix_session::SessionExt;
 use actix_utils::future::Either;
 use actix_web::{
+    Error, FromRequest, HttpMessage, HttpRequest, HttpResponse, HttpResponseBuilder, ResponseError,
     body::{EitherBody, MessageBody},
-    cookie::{time, Cookie, SameSite},
+    cookie::{Cookie, SameSite, time},
     dev::forward_ready,
     dev::{Service, ServiceRequest, ServiceResponse, Transform},
-    http::{header, Method},
+    http::{Method, header},
     web::BytesMut,
-    Error, FromRequest, HttpMessage, HttpRequest, HttpResponse, HttpResponseBuilder, ResponseError,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{
-    future::{err, ok, Ready},
+    future::{Ready, err, ok},
     ready,
     stream::StreamExt,
 };
@@ -307,6 +307,17 @@ pub struct CsrfMiddlewareConfig {
     /// Set `false` only for local HTTP.
     pub secure: bool,
 
+    /// `Domain` applied to every cookie the
+    /// middleware sets. `None` (default) keeps
+    /// cookies host-only. Set a parent like
+    /// `.example.com` to share across subdomains.
+    ///
+    /// Widens the CSRF trust boundary to every
+    /// subdomain; read [`with_cookie_domain`] first.
+    ///
+    /// [`with_cookie_domain`]: CsrfMiddlewareConfig::with_cookie_domain
+    pub domain: Option<String>,
+
     /// Authorized (session-bound) tokens.
     pub token_cookie_name: String,
 
@@ -375,6 +386,7 @@ impl CsrfMiddlewareConfig {
             skip_for: vec![],
             manual_multipart: false,
             secure: true,
+            domain: None,
             enforce_origin: false,
             allowed_origins: vec![],
             max_body_bytes: 2 * 1024 * 1024, // 2 MiB default
@@ -416,6 +428,7 @@ impl CsrfMiddlewareConfig {
             skip_for: vec![],
             manual_multipart: false,
             secure: true,
+            domain: None,
             enforce_origin: false,
             allowed_origins: vec![],
             max_body_bytes: 2 * 1024 * 1024,
@@ -458,6 +471,35 @@ impl CsrfMiddlewareConfig {
     /// Defaults to `true`. Set `false` only for local HTTP.
     pub fn with_secure(mut self, secure: bool) -> Self {
         self.secure = secure;
+        self
+    }
+
+    /// Set the `Domain` for every cookie the
+    /// middleware emits. Use a parent like
+    /// `.example.com` to share tokens across subdomains.
+    ///
+    /// The domain must domain-match the host serving
+    /// the response, or the browser silently drops the
+    /// cookie and every later request fails validation.
+    ///
+    /// # Security
+    /// Domain-scoping shares the token with every
+    /// subdomain and widens the CSRF trust boundary to
+    /// all of them. Under Double-Submit Cookie the token
+    /// cookie is script-readable by design, so any
+    /// subdomain can read and forge it. Do not set a
+    /// domain when an untrusted or user-content
+    /// subdomain exists.
+    ///
+    /// # Examples
+    /// ```
+    /// use actix_csrf_middleware::CsrfMiddlewareConfig;
+    ///
+    /// let cfg = CsrfMiddlewareConfig::double_submit_cookie(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    ///     .with_cookie_domain(".example.com");
+    /// ```
+    pub fn with_cookie_domain(mut self, domain: impl Into<String>) -> Self {
+        self.domain = Some(domain.into());
         self
     }
 
@@ -772,20 +814,19 @@ where
 
             // Ensure an authorized token cookie exists
             // after login (DoubleSubmitCookie only).
-            if self.config.pattern == CsrfPattern::DoubleSubmitCookie {
-                if let (Some(TokenClass::Authorized), Some((ref sess_id, _))) =
+            if self.config.pattern == CsrfPattern::DoubleSubmitCookie
+                && let (Some(TokenClass::Authorized), Some((sess_id, _))) =
                     (token_class, cookie_session.as_ref())
-                {
-                    // If no authorized token cookie yet,
-                    // issue one now.
-                    if req.cookie(&self.config.token_cookie_name).is_none() {
-                        let tok = generate_hmac_token_ctx(
-                            TokenClass::Authorized,
-                            sess_id,
-                            self.config.secret_key.as_slice(),
-                        );
-                        set_token_bytes = Some(tok);
-                    }
+            {
+                // If no authorized token cookie yet,
+                // issue one now.
+                if req.cookie(&self.config.token_cookie_name).is_none() {
+                    let tok = generate_hmac_token_ctx(
+                        TokenClass::Authorized,
+                        sess_id,
+                        self.config.secret_key.as_slice(),
+                    );
+                    set_token_bytes = Some(tok);
                 }
             }
 
@@ -820,32 +861,31 @@ where
             .headers()
             .get(header::CONTENT_TYPE)
             .and_then(|hv| hv.to_str().ok())
+            && ct.starts_with("multipart/form-data")
         {
-            if ct.starts_with("multipart/form-data") {
-                // Deny any multipart/form-data requests if
-                // it isn't allowed explicitly by the consumer.
-                if !self.config.manual_multipart {
-                    let resp = CsrfError::MultipartNotEnabled.error_response();
-                    return Either::right(ok(req
-                        .into_response(resp)
-                        .map_into_boxed_body()
-                        .map_into_right_body()));
-                }
-
-                // Then consumer reads body, extracts and
-                // verifies csrf tokens manually in their handlers.
-                let resp = CsrfResponse {
-                    fut: self.service.call(req),
-                    config: Some(self.config.clone()),
-                    set_token: None,
-                    set_pre_session: None,
-                    token_class: None,
-                    remove_pre_session: false,
-                    _phantom: PhantomData,
-                };
-
-                return Either::left(CsrfTokenValidator::CsrfResponse { response: resp });
+            // Deny any multipart/form-data requests if
+            // it isn't allowed explicitly by the consumer.
+            if !self.config.manual_multipart {
+                let resp = CsrfError::MultipartNotEnabled.error_response();
+                return Either::right(ok(req
+                    .into_response(resp)
+                    .map_into_boxed_body()
+                    .map_into_right_body()));
             }
+
+            // Then consumer reads body, extracts and
+            // verifies csrf tokens manually in their handlers.
+            let resp = CsrfResponse {
+                fut: self.service.call(req),
+                config: Some(self.config.clone()),
+                set_token: None,
+                set_pre_session: None,
+                token_class: None,
+                remove_pre_session: false,
+                _phantom: PhantomData,
+            };
+
+            return Either::left(CsrfTokenValidator::CsrfResponse { response: resp });
         }
 
         let (session_id, token_class) = if let Some((session_id, _)) = cookie_session {
@@ -962,32 +1002,32 @@ where
                 #[cfg(not(feature = "actix-session"))]
                 let _ = &true_token;
 
-                if let Some(req) = req.take() {
-                    // Session id cannot be empty with DoubleSubmitCookie pattern
-                    let session_id = if config.pattern == CsrfPattern::DoubleSubmitCookie {
-                        if let Some(id) = session_id.take() {
-                            Some(id)
-                        } else {
-                            error!("session id is empty in csrf token validator");
-
-                            let resp = CsrfError::Internal.error_response();
-                            return Poll::Ready(Ok(req
-                                .into_response(resp)
-                                .map_into_boxed_body()
-                                .map_into_right_body()));
-                        }
-                    } else {
-                        None
-                    };
-
-                    // Validate client token based on the pattern
-                    let valid = match &config.pattern {
-                        #[cfg(feature = "actix-session")]
-                        CsrfPattern::SynchronizerToken => {
-                            if eq_tokens(true_token.as_bytes(), client_token.as_bytes()) {
-                                true
+                match req.take() {
+                    Some(req) => {
+                        // Session id cannot be empty with DoubleSubmitCookie pattern
+                        let session_id = if config.pattern == CsrfPattern::DoubleSubmitCookie {
+                            if let Some(id) = session_id.take() {
+                                Some(id)
                             } else {
-                                let alt_valid = {
+                                error!("session id is empty in csrf token validator");
+
+                                let resp = CsrfError::Internal.error_response();
+                                return Poll::Ready(Ok(req
+                                    .into_response(resp)
+                                    .map_into_boxed_body()
+                                    .map_into_right_body()));
+                            }
+                        } else {
+                            None
+                        };
+
+                        // Validate client token based on the pattern
+                        let valid = match &config.pattern {
+                            #[cfg(feature = "actix-session")]
+                            CsrfPattern::SynchronizerToken => {
+                                if eq_tokens(true_token.as_bytes(), client_token.as_bytes()) {
+                                    true
+                                } else {
                                     let session = req.get_session();
                                     let alt_key = match token_class
                                         .as_ref()
@@ -997,76 +1037,90 @@ where
                                         TokenClass::Authorized => &config.anon_session_key_name,
                                         TokenClass::Anonymous => &config.token_cookie_name,
                                     };
+
                                     let alt = session.get::<String>(alt_key).ok().flatten();
 
                                     alt.map(|t| eq_tokens(t.as_bytes(), client_token.as_bytes()))
                                         .unwrap_or(false)
+                                }
+                            }
+                            CsrfPattern::DoubleSubmitCookie => {
+                                let ctx = token_class
+                                    .as_ref()
+                                    .copied()
+                                    .unwrap_or(TokenClass::Anonymous);
+
+                                let Some(sid) = session_id.as_deref() else {
+                                    error!("session id is empty in csrf token validator");
+
+                                    let resp = CsrfError::Internal.error_response();
+                                    return Poll::Ready(Ok(req
+                                        .into_response(resp)
+                                        .map_into_boxed_body()
+                                        .map_into_right_body()));
                                 };
 
-                                alt_valid
+                                validate_hmac_token_ctx(
+                                    ctx,
+                                    sid,
+                                    client_token.as_bytes(),
+                                    config.secret_key.as_slice(),
+                                )
+                                .unwrap_or(false)
                             }
-                        }
-                        CsrfPattern::DoubleSubmitCookie => {
-                            let ctx = token_class
-                                .as_ref()
-                                .copied()
-                                .unwrap_or(TokenClass::Anonymous);
-                            validate_hmac_token_ctx(
-                                ctx,
-                                session_id
-                                    .as_deref()
-                                    .expect("session id cannot be empty is hmac validation"),
-                                client_token.as_bytes(),
-                                config.secret_key.as_slice(),
-                            )
-                            .unwrap_or(false)
-                        }
-                    };
+                        };
 
-                    if !valid {
-                        let resp = CsrfError::TokenInvalid.error_response();
-                        return Poll::Ready(Ok(req
-                            .into_response(resp)
-                            .map_into_boxed_body()
-                            .map_into_right_body()));
+                        if !valid {
+                            let resp = CsrfError::TokenInvalid.error_response();
+                            return Poll::Ready(Ok(req
+                                .into_response(resp)
+                                .map_into_boxed_body()
+                                .map_into_right_body()));
+                        }
+
+                        // Rotate token based on configured pattern after every successful validation
+                        let new_token = match &config.pattern {
+                            #[cfg(feature = "actix-session")]
+                            CsrfPattern::SynchronizerToken => generate_random_token(),
+                            CsrfPattern::DoubleSubmitCookie => {
+                                let ctx = token_class
+                                    .as_ref()
+                                    .copied()
+                                    .unwrap_or(TokenClass::Anonymous);
+
+                                let Some(sid) = session_id.as_deref() else {
+                                    error!("session id is empty in csrf token validator");
+
+                                    let resp = CsrfError::Internal.error_response();
+                                    return Poll::Ready(Ok(req
+                                        .into_response(resp)
+                                        .map_into_boxed_body()
+                                        .map_into_right_body()));
+                                };
+
+                                generate_hmac_token_ctx(ctx, sid, config.secret_key.as_ref())
+                            }
+                        };
+
+                        let resp = CsrfResponse {
+                            fut: service.call(req),
+                            config: Some(config.clone()),
+                            set_token: Some(new_token),
+                            set_pre_session: None,
+                            token_class: *token_class,
+                            remove_pre_session: false,
+                            _phantom: PhantomData,
+                        };
+
+                        self.set(CsrfTokenValidator::CsrfResponse { response: resp });
+
+                        cx.waker().wake_by_ref(); // wake for the next pool
+                        Poll::Pending
                     }
-
-                    // Rotate token based on configured pattern after every successful validation
-                    let new_token = match &config.pattern {
-                        #[cfg(feature = "actix-session")]
-                        CsrfPattern::SynchronizerToken => generate_random_token(),
-                        CsrfPattern::DoubleSubmitCookie => {
-                            let ctx = token_class
-                                .as_ref()
-                                .copied()
-                                .unwrap_or(TokenClass::Anonymous);
-                            generate_hmac_token_ctx(
-                                ctx,
-                                session_id
-                                    .as_deref()
-                                    .expect("session id cannot be empty is hmac validation"),
-                                config.secret_key.as_ref(),
-                            )
-                        }
-                    };
-
-                    let resp = CsrfResponse {
-                        fut: service.call(req),
-                        config: Some(config.clone()),
-                        set_token: Some(new_token),
-                        set_pre_session: None,
-                        token_class: *token_class,
-                        remove_pre_session: false,
-                        _phantom: PhantomData,
-                    };
-
-                    self.set(CsrfTokenValidator::CsrfResponse { response: resp });
-
-                    cx.waker().wake_by_ref(); // wake for the next pool
-                    Poll::Pending
-                } else {
-                    error!("request already taken in csrf validator's state machine");
-                    Poll::Ready(Err(CsrfError::Internal.into()))
+                    _ => {
+                        error!("request already taken in csrf validator's state machine");
+                        Poll::Ready(Err(CsrfError::Internal.into()))
+                    }
                 }
             }
             CsrfTokenValidatorProj::ReadingBody {
@@ -1181,21 +1235,21 @@ fn sync_read_token_from_body(
     body: &[u8],
     token_field: &str,
 ) -> Option<String> {
-    if let Some(ct) = headers.get(header::CONTENT_TYPE) {
-        if let Ok(ct) = ct.to_str() {
-            if ct.starts_with("application/json") {
-                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(body) {
-                    return json
-                        .get(token_field)
-                        .and_then(|v| v.as_str().map(String::from));
-                }
-            } else if ct.starts_with("application/x-www-form-urlencoded") {
-                if let Ok(form) = serde_urlencoded::from_bytes::<HashMap<String, String>>(body) {
-                    return form.get(token_field).cloned();
-                }
-            } else {
-                warn!("unsupported request content type, unable to extract and verify csrf token");
+    if let Some(ct) = headers.get(header::CONTENT_TYPE)
+        && let Ok(ct) = ct.to_str()
+    {
+        if ct.starts_with("application/json") {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(body) {
+                return json
+                    .get(token_field)
+                    .and_then(|v| v.as_str().map(String::from));
             }
+        } else if ct.starts_with("application/x-www-form-urlencoded") {
+            if let Ok(form) = serde_urlencoded::from_bytes::<HashMap<String, String>>(body) {
+                return form.get(token_field).cloned();
+            }
+        } else {
+            warn!("unsupported request content type, unable to extract and verify csrf token");
         }
     }
     None
@@ -1247,14 +1301,16 @@ where
                     let cookie_val =
                         encode_pre_session_cookie(pre_session_id, config.secret_key.as_slice());
 
-                    match resp.response_mut().add_cookie(
-                        &Cookie::build(CSRF_PRE_SESSION_KEY, cookie_val)
-                            .http_only(PRE_SESSION_HTTP_ONLY)
-                            .secure(config.secure)
-                            .same_site(PRE_SESSION_SAME_SITE)
-                            .path("/")
-                            .finish(),
-                    ) {
+                    let mut pre_session_cookie = Cookie::build(CSRF_PRE_SESSION_KEY, cookie_val)
+                        .http_only(PRE_SESSION_HTTP_ONLY)
+                        .secure(config.secure)
+                        .same_site(PRE_SESSION_SAME_SITE)
+                        .path("/")
+                        .finish();
+
+                    apply_domain(&mut pre_session_cookie, config.domain.as_deref());
+
+                    match resp.response_mut().add_cookie(&pre_session_cookie) {
                         Ok(_) => {}
                         Err(e) => {
                             error!("unable to set pre-session cookie in csrf response: {e:?}");
@@ -1271,10 +1327,10 @@ where
                 // If requested, clear pre-session cookie
                 // and anon token cookie.
                 if *this.remove_pre_session {
-                    if let Err(e) = resp
-                        .response_mut()
-                        .add_cookie(&expired_pre_session_cookie(config.secure))
-                    {
+                    if let Err(e) = resp.response_mut().add_cookie(&expired_pre_session_cookie(
+                        config.secure,
+                        config.domain.as_deref(),
+                    )) {
                         error!("unable to expire pre-session cookie in csrf response: {e:?}");
 
                         let res = CsrfError::Internal.error_response();
@@ -1285,19 +1341,20 @@ where
                     }
 
                     // Expire anonymous token cookie
-                    if matches!(config.pattern, CsrfPattern::DoubleSubmitCookie) {
-                        if let Err(e) = resp.response_mut().add_cookie(&expire_cookie(
+                    if matches!(config.pattern, CsrfPattern::DoubleSubmitCookie)
+                        && let Err(e) = resp.response_mut().add_cookie(&expire_cookie(
                             &config.anon_token_cookie_name,
                             config.secure,
-                        )) {
-                            error!("unable to expire anon token cookie in csrf response: {e:?}");
+                            config.domain.as_deref(),
+                        ))
+                    {
+                        error!("unable to expire anon token cookie in csrf response: {e:?}");
 
-                            let res = CsrfError::Internal.error_response();
-                            return Poll::Ready(Ok(resp
-                                .into_response(res)
-                                .map_into_boxed_body()
-                                .map_into_right_body()));
-                        }
+                        let res = CsrfError::Internal.error_response();
+                        return Poll::Ready(Ok(resp
+                            .into_response(res)
+                            .map_into_boxed_body()
+                            .map_into_right_body()));
                     }
                 }
 
@@ -1328,7 +1385,9 @@ where
                             match resp.request().get_session().insert(key, new_token) {
                                 Ok(()) => {}
                                 Err(e) => {
-                                    error!("unable to set a csrf token with actix session in csrf response: {e:?}");
+                                    error!(
+                                        "unable to set a csrf token with actix session in csrf response: {e:?}"
+                                    );
 
                                     let res = CsrfError::Internal.error_response();
                                     return Poll::Ready(Ok(resp
@@ -1361,12 +1420,14 @@ where
                                     TokenClass::Anonymous => &config.anon_token_cookie_name,
                                 };
 
-                            let new_token_cookie = Cookie::build(cookie_name, new_token)
+                            let mut new_token_cookie = Cookie::build(cookie_name, new_token)
                                 .http_only(cookie_config.http_only)
                                 .secure(config.secure)
                                 .same_site(cookie_config.same_site)
                                 .path("/")
                                 .finish();
+
+                            apply_domain(&mut new_token_cookie, config.domain.as_deref());
 
                             // Update token cookie with a new token
                             match resp.response_mut().add_cookie(&new_token_cookie) {
@@ -1779,22 +1840,30 @@ pub fn validate_hmac_token(session_id: &str, token: &[u8], secret: &[u8]) -> Res
 /// browser and the teardown is silently undone.
 struct CsrfTeardown;
 
-fn expire_cookie(name: &str, secure: bool) -> Cookie<'static> {
+fn expire_cookie(name: &str, secure: bool, domain: Option<&str>) -> Cookie<'static> {
     let mut del = Cookie::new(name.to_owned(), "");
     del.set_max_age(time::Duration::seconds(0));
     del.set_expires(time::OffsetDateTime::UNIX_EPOCH);
     del.set_path("/");
     del.set_secure(secure);
 
+    apply_domain(&mut del, domain);
+
     del
 }
 
-fn expired_pre_session_cookie(secure: bool) -> Cookie<'static> {
-    let mut del = expire_cookie(CSRF_PRE_SESSION_KEY, secure);
+fn expired_pre_session_cookie(secure: bool, domain: Option<&str>) -> Cookie<'static> {
+    let mut del = expire_cookie(CSRF_PRE_SESSION_KEY, secure, domain);
     del.set_http_only(PRE_SESSION_HTTP_ONLY);
     del.set_same_site(PRE_SESSION_SAME_SITE);
 
     del
+}
+
+fn apply_domain(cookie: &mut Cookie<'_>, domain: Option<&str>) {
+    if let Some(d) = domain {
+        cookie.set_domain(d.to_owned());
+    }
 }
 
 /// Upgrade anonymous CSRF state to authorized
@@ -1820,7 +1889,10 @@ pub fn rotate_csrf_after_login(
     resp: &mut HttpResponseBuilder,
     config: &CsrfMiddlewareConfig,
 ) -> Result<(), Error> {
-    resp.cookie(expired_pre_session_cookie(config.secure));
+    resp.cookie(expired_pre_session_cookie(
+        config.secure,
+        config.domain.as_deref(),
+    ));
 
     match config.pattern {
         #[cfg(feature = "actix-session")]
@@ -1850,15 +1922,21 @@ pub fn rotate_csrf_after_login(
                 None => (true, SameSite::Lax),
             };
 
-            let csrf_cookie = Cookie::build(&config.token_cookie_name, token)
+            let mut csrf_cookie = Cookie::build(&config.token_cookie_name, token)
                 .http_only(http_only)
                 .secure(config.secure)
                 .same_site(same_site)
                 .path("/")
                 .finish();
 
+            apply_domain(&mut csrf_cookie, config.domain.as_deref());
+
             resp.cookie(csrf_cookie);
-            resp.cookie(expire_cookie(&config.anon_token_cookie_name, config.secure));
+            resp.cookie(expire_cookie(
+                &config.anon_token_cookie_name,
+                config.secure,
+                config.domain.as_deref(),
+            ));
 
             Ok(())
         }
@@ -1896,7 +1974,10 @@ pub fn rotate_csrf_after_logout(
 ) -> Result<(), Error> {
     req.extensions_mut().insert(CsrfTeardown);
 
-    resp.cookie(expired_pre_session_cookie(config.secure));
+    resp.cookie(expired_pre_session_cookie(
+        config.secure,
+        config.domain.as_deref(),
+    ));
 
     match config.pattern {
         #[cfg(feature = "actix-session")]
@@ -1904,9 +1985,21 @@ pub fn rotate_csrf_after_logout(
             req.get_session().purge();
         }
         CsrfPattern::DoubleSubmitCookie => {
-            resp.cookie(expire_cookie(&config.session_id_cookie_name, config.secure));
-            resp.cookie(expire_cookie(&config.token_cookie_name, config.secure));
-            resp.cookie(expire_cookie(&config.anon_token_cookie_name, config.secure));
+            resp.cookie(expire_cookie(
+                &config.session_id_cookie_name,
+                config.secure,
+                config.domain.as_deref(),
+            ));
+            resp.cookie(expire_cookie(
+                &config.token_cookie_name,
+                config.secure,
+                config.domain.as_deref(),
+            ));
+            resp.cookie(expire_cookie(
+                &config.anon_token_cookie_name,
+                config.secure,
+                config.domain.as_deref(),
+            ));
         }
     }
 

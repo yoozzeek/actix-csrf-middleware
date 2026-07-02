@@ -3,13 +3,13 @@ mod common;
 use common::*;
 
 use actix_csrf_middleware::{
-    generate_random_token, CsrfDoubleSubmitCookie, CsrfMiddlewareConfig, CsrfPattern,
-    CSRF_PRE_SESSION_KEY, DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_FIELD,
-    DEFAULT_CSRF_TOKEN_HEADER, DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY,
+    CSRF_PRE_SESSION_KEY, CsrfDoubleSubmitCookie, CsrfMiddlewareConfig, CsrfPattern,
+    DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_FIELD, DEFAULT_CSRF_TOKEN_HEADER,
+    DEFAULT_CSRF_TOKEN_KEY, DEFAULT_SESSION_ID_KEY, generate_random_token,
 };
 use actix_http::body::{BoxBody, EitherBody};
 use actix_http::{Request, StatusCode};
-use actix_web::cookie::{time, Cookie, SameSite};
+use actix_web::cookie::{Cookie, SameSite, time};
 use actix_web::dev::{Service, ServiceResponse};
 use actix_web::http::header::ContentType;
 use actix_web::test;
@@ -160,7 +160,7 @@ async fn double_submit_cookie_token_rotation() {
 
 #[actix_web::test]
 async fn instant_rotation_on_login() {
-    use actix_web::cookie::{time, Cookie};
+    use actix_web::cookie::{Cookie, time};
 
     let app = build_app(CsrfMiddlewareConfig::double_submit_cookie(&get_secret_key())).await;
 
@@ -279,6 +279,7 @@ async fn custom_config_header_name() {
         secret_key: get_secret_key().into(),
         skip_for: vec![],
         secure: true,
+        domain: None,
         enforce_origin: false,
         allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
@@ -318,6 +319,7 @@ async fn custom_config_cookie_name() {
         secret_key: get_secret_key().into(),
         skip_for: vec![],
         secure: true,
+        domain: None,
         enforce_origin: false,
         allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
@@ -357,6 +359,7 @@ async fn custom_config_form_field_name() {
         secret_key: get_secret_key().into(),
         skip_for: vec![],
         secure: true,
+        domain: None,
         enforce_origin: false,
         allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,

@@ -6,10 +6,10 @@ use actix_csrf_middleware::{
     CsrfMiddlewareConfig, CsrfPattern, DEFAULT_CSRF_ANON_TOKEN_KEY, DEFAULT_CSRF_TOKEN_FIELD,
     DEFAULT_CSRF_TOKEN_HEADER, DEFAULT_CSRF_TOKEN_KEY,
 };
-use actix_http::body::{BoxBody, EitherBody};
 use actix_http::Request;
 #[cfg(feature = "actix-session")]
 use actix_http::StatusCode;
+use actix_http::body::{BoxBody, EitherBody};
 use actix_web::cookie::Cookie;
 use actix_web::dev::{Service, ServiceResponse};
 #[cfg(feature = "actix-session")]
@@ -151,6 +151,7 @@ async fn custom_config_header_name() {
         secret_key: get_secret_key().into(),
         skip_for: vec![],
         secure: true,
+        domain: None,
         enforce_origin: false,
         allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
@@ -185,6 +186,7 @@ async fn custom_config_cookie_name() {
         secret_key: get_secret_key().into(),
         skip_for: vec![],
         secure: true,
+        domain: None,
         enforce_origin: false,
         allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
@@ -219,6 +221,7 @@ async fn custom_config_form_field_name() {
         secret_key: get_secret_key().into(),
         skip_for: vec![],
         secure: true,
+        domain: None,
         enforce_origin: false,
         allowed_origins: vec![],
         max_body_bytes: 2 * 1024 * 1024,
