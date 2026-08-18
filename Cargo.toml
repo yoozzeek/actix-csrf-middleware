@@ -1,6 +1,6 @@
 [package]
 name = "actix-csrf-middleware"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 license = "MIT"
 authors = ["Andrei Kocherign <zeek@tuta.com>"]
@@ -18,7 +18,7 @@ crate-type = ["rlib"]
 session = ["actix-session"]
 
 [dependencies]
-actix-web = { version = "4", features = ["compat", "secure-cookies"] }
+actix-web = { version = "4", default-features = false, features = ["compat", "secure-cookies"] }
 actix-session = { version = "0.11", optional = true, features = ["cookie-session"] }
 actix-utils = "3"
 actix-http = "3"
@@ -39,4 +39,5 @@ zeroize = "1"
 [dev-dependencies]
 actix-rt = "2"
 actix-multipart = "0.7"
+actix-web = { version = "4", default-features = false, features = ["macros"] }
 proptest = "1"
