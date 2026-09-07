@@ -89,7 +89,7 @@ async fn multipart_without_optin_renders_json_contract() {
         .to_request();
 
     let resp = test::call_service(&app, req).await;
-    assert_json_error(resp, StatusCode::BAD_REQUEST, "csrf_multipart_not_enabled").await;
+    assert_json_error(resp, StatusCode::BAD_REQUEST, "csrf_multipart_not_allowed").await;
 }
 
 #[actix_web::test]
