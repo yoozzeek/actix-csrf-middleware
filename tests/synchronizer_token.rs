@@ -140,7 +140,7 @@ async fn custom_config_header_name() {
 
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::SynchronizerToken,
-        manual_multipart: false,
+        multipart_routes: Vec::new(),
         session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
         token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.to_string(),
         anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.to_string(),
@@ -175,7 +175,7 @@ async fn custom_config_cookie_name() {
 
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::SynchronizerToken,
-        manual_multipart: false,
+        multipart_routes: Vec::new(),
         session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
         token_cookie_name: COOKIE_NAME.to_string(),
         anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.to_string(),
@@ -210,7 +210,7 @@ async fn custom_config_form_field_name() {
 
     let cfg = CsrfMiddlewareConfig {
         pattern: CsrfPattern::SynchronizerToken,
-        manual_multipart: false,
+        multipart_routes: Vec::new(),
         session_id_cookie_name: DEFAULT_SESSION_ID_KEY.to_string(),
         token_cookie_name: DEFAULT_CSRF_TOKEN_KEY.to_string(),
         anon_token_cookie_name: DEFAULT_CSRF_ANON_TOKEN_KEY.to_string(),

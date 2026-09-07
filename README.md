@@ -39,7 +39,7 @@ USE AT YOUR OWN RISK!
 - Helpers for manually extracting and validating CSRF tokens at the handler level are useful for processing
   `multipart/form-data` requests without expensive body reading in middleware
 - Enabled by default for all mutating (`POST`,`PUT`,`PATCH`,`DELETE`) http requests; supports per-path CSRF exclusion
-  via `skip_for`.
+  via `skip_for`, and per-path `multipart/form-data` exemption via `with_multipart`.
 
 ## Quick start
 
@@ -48,7 +48,7 @@ Dependencies:
 ```toml
 [dependencies]
 actix-web = "4"
-actix-csrf-middleware = "0.6"
+actix-csrf-middleware = "0.8"
 ```
 
 Code:

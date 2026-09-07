@@ -1,7 +1,7 @@
 #[macro_use]
 mod common;
 
-use actix_csrf_middleware::{CsrfPattern, DEFAULT_CSRF_TOKEN_HEADER};
+use actix_csrf_middleware::{CsrfPattern, DEFAULT_CSRF_TOKEN_HEADER, MultipartRoute};
 use actix_http::Request;
 use actix_http::body::{BoxBody, EitherBody};
 use actix_web::dev::{Service, ServiceResponse};
@@ -10,6 +10,8 @@ use actix_web::test;
 use actix_web::web::Bytes;
 use common::token_and_cookies_for;
 use serde_json::json;
+
+const MULTIPART_BOUNDARY: &str = "----parametric-boundary";
 
 fn get_secret_key() -> Vec<u8> {
     b"param-secret-param-secret-param-secret-1234".to_vec()
@@ -186,38 +188,16 @@ where
     assert_eq!(resp.status(), 400, "multipart disabled should reject");
 }
 
-// Multipart enabled should accept multipart/form-data when token is present
-async fn case_multipart_enabled<S>(pattern: CsrfPattern, _app: &S)
+async fn case_multipart_listed_path_passes_through<S>(pattern: CsrfPattern, _app: &S)
 where
     S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
 {
-    let cfg =
-        common::config_for_with_secret(pattern.clone(), &get_secret_key()).with_multipart(true);
+    let cfg = common::config_for_with_secret(pattern.clone(), &get_secret_key())
+        .with_multipart(vec![MultipartRoute::Exact("/submit".to_owned())]);
     let app = common::build_app(cfg).await;
-    let (token, cookies) = token_and_cookies_for(&app, &pattern).await;
+    let (_token, cookies) = token_and_cookies_for(&app, &pattern).await;
 
-    let boundary = "----parametric-boundary";
-    let mut body = Vec::new();
-    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-    body.extend_from_slice(b"Content-Disposition: form-data; name=\"csrf_token\"\r\n\r\n");
-    body.extend_from_slice(token.as_bytes());
-    body.extend_from_slice(b"\r\n");
-    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-    body.extend_from_slice(
-        b"Content-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n",
-    );
-    body.extend_from_slice(b"Content-Type: text/plain; charset=utf-8\r\n\r\n");
-    body.extend_from_slice(b"data");
-    body.extend_from_slice(b"\r\n");
-    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-
-    let mut req = test::TestRequest::post()
-        .uri("/submit")
-        .insert_header((
-            "Content-Type",
-            format!("multipart/form-data; boundary={boundary}"),
-        ))
-        .set_payload(Bytes::from(body));
+    let mut req = multipart_upload_to("/submit");
 
     for c in cookies {
         req = req.cookie(c);
@@ -226,7 +206,54 @@ where
     let resp = test::call_service(&app, req.to_request()).await;
     assert!(
         resp.status().is_success(),
-        "multipart enabled should accept"
+        "a listed path reaches the handler without a middleware token check"
+    );
+}
+
+async fn case_multipart_unlisted_path_rejected<S>(pattern: CsrfPattern, _app: &S)
+where
+    S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
+{
+    let cfg = common::config_for_with_secret(pattern.clone(), &get_secret_key())
+        .with_multipart(vec![MultipartRoute::Exact("/some-other-upload".to_owned())]);
+    let app = common::build_app(cfg).await;
+    let (_token, cookies) = token_and_cookies_for(&app, &pattern).await;
+
+    let mut req = multipart_upload_to("/submit");
+
+    for c in cookies {
+        req = req.cookie(c);
+    }
+
+    let resp = test::call_service(&app, req.to_request()).await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "exempting one path must not exempt every other route from the token check"
+    );
+}
+
+async fn case_multipart_exemption_keeps_origin_enforced<S>(pattern: CsrfPattern, _app: &S)
+where
+    S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
+{
+    let cfg = common::config_for_with_secret(pattern.clone(), &get_secret_key())
+        .with_multipart(vec![MultipartRoute::Exact("/submit".to_owned())])
+        .with_enforce_origin(true, vec!["https://allowed.example".to_owned()]);
+    let app = common::build_app(cfg).await;
+    let (_token, cookies) = token_and_cookies_for(&app, &pattern).await;
+
+    let mut req = multipart_upload_to("/submit").insert_header(("Origin", "https://evil.example"));
+
+    for c in cookies {
+        req = req.cookie(c);
+    }
+
+    let resp = test::call_service(&app, req.to_request()).await;
+    assert_eq!(
+        resp.status(),
+        403,
+        "a multipart exemption must not bypass Origin enforcement"
     );
 }
 
@@ -344,6 +371,26 @@ where
     assert_eq!(set.len(), N, "tokens must be unique across fresh sessions");
 }
 
+fn multipart_upload_to(uri: &str) -> test::TestRequest {
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{MULTIPART_BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: text/plain; charset=utf-8\r\n\r\n");
+    body.extend_from_slice(b"data");
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{MULTIPART_BOUNDARY}--\r\n").as_bytes());
+
+    test::TestRequest::post()
+        .uri(uri)
+        .insert_header((
+            "Content-Type",
+            format!("multipart/form-data; boundary={MULTIPART_BOUNDARY}"),
+        ))
+        .set_payload(Bytes::from(body))
+}
+
 for_patterns!(
     param_valid_header_double,
     param_valid_header_sync,
@@ -392,7 +439,17 @@ for_patterns!(
 for_patterns!(
     param_multipart_enabled_double,
     param_multipart_enabled_sync,
-    case_multipart_enabled
+    case_multipart_listed_path_passes_through
+);
+for_patterns!(
+    param_multipart_unlisted_double,
+    param_multipart_unlisted_sync,
+    case_multipart_unlisted_path_rejected
+);
+for_patterns!(
+    param_multipart_origin_double,
+    param_multipart_origin_sync,
+    case_multipart_exemption_keeps_origin_enforced
 );
 for_patterns!(
     param_custom_header_double,

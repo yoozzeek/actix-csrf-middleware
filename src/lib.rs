@@ -61,11 +61,8 @@ pub const DEFAULT_CSRF_ANON_TOKEN_KEY: &str = "CSRF-ANON";
 /// Read from `application/json` and
 /// `application/x-www-form-urlencoded` bodies.
 /// `multipart/form-data` bodies are never scanned:
-/// such requests are rejected with 400 unless
-/// [`CsrfMiddlewareConfig::with_multipart`] is
-/// enabled, in which case the request passes
-/// through and the handler must extract and
-/// validate the token itself.
+/// such requests get 400 unless the path is listed
+/// in [`CsrfMiddlewareConfig::with_multipart`].
 ///
 /// Override with [`CsrfMiddlewareConfig::token_form_field`].
 pub const DEFAULT_CSRF_TOKEN_FIELD: &str = "csrf_token";
@@ -145,6 +142,39 @@ impl TokenClass {
     }
 }
 
+/// Path matcher for [`CsrfMiddlewareConfig::with_multipart`].
+///
+/// Matched against the raw pre-routing path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MultipartRoute {
+    Exact(String),
+
+    /// Matches at a segment boundary: `/files`
+    /// covers `/files/1/raw`, never `/filesystem`.
+    Prefix(String),
+}
+
+impl MultipartRoute {
+    fn path(&self) -> &str {
+        match self {
+            MultipartRoute::Exact(path) | MultipartRoute::Prefix(path) => path,
+        }
+    }
+
+    fn matches(&self, req_path: &str) -> bool {
+        match self {
+            MultipartRoute::Exact(path) => path == req_path,
+            MultipartRoute::Prefix(path) => {
+                let prefix = path.strip_suffix('/').unwrap_or(path);
+
+                req_path
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            }
+        }
+    }
+}
+
 /// Reason a request was rejected by [`CsrfMiddleware`].
 ///
 /// Implements [`ResponseError`], so by default it
@@ -171,9 +201,10 @@ pub enum CsrfError {
     /// enforcement. `403`.
     OriginRejected,
 
-    /// `multipart/form-data` request while
-    /// `with_multipart` is disabled. `400`.
-    MultipartNotEnabled,
+    /// `multipart/form-data` request to
+    /// a path not matched by any route in
+    /// [`CsrfMiddlewareConfig::with_multipart`]. `400`.
+    MultipartNotAllowed,
 
     /// Body exceeded `max_body_bytes` before the
     /// token could be read. `413`.
@@ -195,7 +226,7 @@ impl CsrfError {
             CsrfError::TokenMissing => "csrf_token_missing",
             CsrfError::TokenInvalid => "csrf_token_invalid",
             CsrfError::OriginRejected => "csrf_origin_rejected",
-            CsrfError::MultipartNotEnabled => "csrf_multipart_not_enabled",
+            CsrfError::MultipartNotAllowed => "csrf_multipart_not_allowed",
             CsrfError::BodyTooLarge => "csrf_body_too_large",
             CsrfError::BodyRead => "csrf_body_read_error",
             CsrfError::Internal => "csrf_internal_error",
@@ -219,7 +250,7 @@ impl ResponseError for CsrfError {
             CsrfError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
             CsrfError::TokenMissing
             | CsrfError::TokenInvalid
-            | CsrfError::MultipartNotEnabled
+            | CsrfError::MultipartNotAllowed
             | CsrfError::BodyRead => StatusCode::BAD_REQUEST,
         }
     }
@@ -298,7 +329,7 @@ pub struct CsrfDoubleSubmitCookie {
 #[derive(Clone)]
 pub struct CsrfMiddlewareConfig {
     pub pattern: CsrfPattern,
-    pub manual_multipart: bool,
+    pub multipart_routes: Vec<MultipartRoute>,
     pub session_id_cookie_name: String,
 
     /// `Secure` flag applied to every cookie
@@ -384,7 +415,7 @@ impl CsrfMiddlewareConfig {
             token_cookie_config: None,
             secret_key: zeroize::Zeroizing::new(secret_key.into()),
             skip_for: vec![],
-            manual_multipart: false,
+            multipart_routes: Vec::new(),
             secure: true,
             domain: None,
             enforce_origin: false,
@@ -426,7 +457,7 @@ impl CsrfMiddlewareConfig {
             }),
             secret_key: zeroize::Zeroizing::new(secret_key.into()),
             skip_for: vec![],
-            manual_multipart: false,
+            multipart_routes: Vec::new(),
             secure: true,
             domain: None,
             enforce_origin: false,
@@ -435,14 +466,20 @@ impl CsrfMiddlewareConfig {
         }
     }
 
-    /// Let `multipart/form-data` requests
-    /// pass without token extraction.
+    /// Exempt these routes from multipart token
+    /// extraction; their handlers must validate it.
+    /// Every other path rejects multipart with 400.
     ///
-    /// When `true`, the handler must read and
-    /// validate the token manually. Defaults to
-    /// `false` for safety.
-    pub fn with_multipart(mut self, multipart: bool) -> Self {
-        self.manual_multipart = multipart;
+    /// # Panics
+    /// If a route can never match a request path,
+    /// or a `Prefix` would exempt every path.
+    pub fn with_multipart(mut self, routes: Vec<MultipartRoute>) -> Self {
+        for route in &routes {
+            check_multipart_route(route);
+        }
+
+        self.multipart_routes = routes;
+
         self
     }
 
@@ -554,8 +591,8 @@ impl CsrfMiddlewareConfig {
 ///   a token is required, read from the header
 ///   [`DEFAULT_CSRF_TOKEN_HEADER`] or the body
 ///   field [`DEFAULT_CSRF_TOKEN_FIELD`] (JSON or url-encoded).
-///   `multipart/form-data` is rejected unless
-///   [`CsrfMiddlewareConfig::with_multipart`] is enabled.
+///   `multipart/form-data` is rejected unless the path is
+///   listed in [`CsrfMiddlewareConfig::with_multipart`].
 /// - The token is rotated on successful validation.
 /// - Optional Origin/Referer enforcement via
 ///   [`CsrfMiddlewareConfig::with_enforce_origin`].
@@ -863,10 +900,13 @@ where
             .and_then(|hv| hv.to_str().ok())
             && ct.starts_with("multipart/form-data")
         {
-            // Deny any multipart/form-data requests if
-            // it isn't allowed explicitly by the consumer.
-            if !self.config.manual_multipart {
-                let resp = CsrfError::MultipartNotEnabled.error_response();
+            if !self
+                .config
+                .multipart_routes
+                .iter()
+                .any(|route| route.matches(req.path()))
+            {
+                let resp = CsrfError::MultipartNotAllowed.error_response();
                 return Either::right(ok(req
                     .into_response(resp)
                     .map_into_boxed_body()
@@ -2012,6 +2052,18 @@ fn check_secret_key(secret_key: &[u8]) {
     }
 }
 
+fn check_multipart_route(route: &MultipartRoute) {
+    let path = route.path();
+
+    if !path.starts_with('/') || path.contains(['?', '#']) {
+        panic!("csrf multipart route {path:?} never matches a request path");
+    }
+
+    if matches!(route, MultipartRoute::Prefix(_)) && path.trim_end_matches('/').is_empty() {
+        panic!("csrf multipart prefix {path:?} exempts every path");
+    }
+}
+
 fn origin_allowed(headers: &HeaderMap, cfg: &CsrfMiddlewareConfig) -> bool {
     if !cfg.enforce_origin {
         return true;
@@ -2063,4 +2115,39 @@ fn origin_allowed(headers: &HeaderMap, cfg: &CsrfMiddlewareConfig) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod multipart_route_tests {
+    use super::MultipartRoute;
+
+    #[test]
+    fn exact_matches_only_itself() {
+        let route = MultipartRoute::Exact("/upload".to_owned());
+
+        assert!(route.matches("/upload"));
+        assert!(!route.matches("/upload/"));
+        assert!(!route.matches("/upload/1"));
+        assert!(!route.matches("/uploads"));
+    }
+
+    #[test]
+    fn prefix_stops_at_segment_boundary() {
+        let route = MultipartRoute::Prefix("/files".to_owned());
+
+        assert!(route.matches("/files"));
+        assert!(route.matches("/files/1/raw"));
+        assert!(!route.matches("/filesystem"));
+        assert!(!route.matches("/files-admin"));
+    }
+
+    #[test]
+    fn prefix_ignores_configured_trailing_slash() {
+        let bare = MultipartRoute::Prefix("/files".to_owned());
+        let slashed = MultipartRoute::Prefix("/files/".to_owned());
+
+        for path in ["/files", "/files/1", "/filesystem"] {
+            assert_eq!(bare.matches(path), slashed.matches(path), "{path}");
+        }
+    }
 }
