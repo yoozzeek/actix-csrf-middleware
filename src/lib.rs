@@ -324,7 +324,9 @@ struct CsrfTeardown;
 /// application/json`. A copy is stored in the response
 /// extensions, letting an app's `ErrorHandlers` recover it
 /// with `res.response().extensions().get::<CsrfError>()`
-/// and re-render in its own shape.
+/// and re-render in its own shape. A fresh response
+/// must copy `Set-Cookie` across: rejections carry
+/// the cookie eviction and the replacement token.
 ///
 /// [`code`]: CsrfError::code
 /// [`status_code`]: ResponseError::status_code
