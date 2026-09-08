@@ -9,12 +9,6 @@ CSRF protection middleware for [Actix Web](https://github.com/actix/actix-web) a
 cookie and synchronizer token patterns (with actix-session) out of the box. Flexible, easy to configure, and includes
 test coverage for common attacks and edge cases.
 
-## ⚠️ Security Warning
-
-This crate has not been audited and may contain bugs and security flaws.
-
-USE AT YOUR OWN RISK!
-
 ## Overview
 
 - Store CSRF tokens as:
@@ -62,17 +56,17 @@ async fn form(csrf: CsrfToken) -> impl Responder {
 }
 
 async fn submit() -> impl Responder {
-    // Runs only after the CSRF token is verified.
+    // Runs only after the CSRF token is verified
     HttpResponse::Ok().body("accepted")
 }
 
 #[actix_web::main] // or #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    // >= 32 bytes; load from your config in production.
+    // >= 32 bytes; load from your config in production
     let secret = b"replace-me-with-a-32+byte-application-secret";
 
     HttpServer::new(move || {
-        // Constant secret, so tokens validate across workers.
+        // Constant secret, so tokens validate across workers
         let config = CsrfMiddlewareConfig::double_submit_cookie(secret);
         App::new()
             .wrap(CsrfMiddleware::new(config))
@@ -84,6 +78,24 @@ async fn main() -> std::io::Result<()> {
         .await
 }
 ```
+
+## Performance
+
+Cost of wrapping an app, measured against the identical app without the
+middleware (`cargo bench`, Double Submit Cookie):
+
+| request                       | time      | allocations | bytes    |
+|-------------------------------|-----------|-------------|----------|
+| path in `skip_for`            | +10 ns    | 0           | 0        |
+| GET, token already valid      | +0.92 µs  | +17         | +1,567   |
+| GET, issues tokens            | +1.23 µs  | +20         | +1,516   |
+| POST, token in `X-CSRF-Token` | +1.56 µs  | +22         | +1,930   |
+| POST, token in a 1 KB body    | +1.94 µs  | +26         | +3,364   |
+| POST, token in a 256 KB body  | +26.81 µs | +26         | +264,484 |
+
+A token in the header is validated without touching the body. A token in a
+JSON or form body costs one copy of it, bounded by `max_body_bytes` (2 MiB by
+default). Skipped prefixes return before any CSRF work.
 
 ## Examples
 
