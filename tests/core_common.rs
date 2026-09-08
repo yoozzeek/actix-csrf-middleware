@@ -371,6 +371,157 @@ where
     assert_eq!(set.len(), N, "tokens must be unique across fresh sessions");
 }
 
+async fn case_json_token_after_escaped_key<S>(pattern: CsrfPattern, app: &S)
+where
+    S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
+{
+    let (token, cookies) = token_and_cookies_for(app, &pattern).await;
+    let body = format!(r#"{{"a\"b":{{"nested":[1,2]}},"csrf_token":"{token}"}}"#);
+
+    let mut req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header(ContentType::json())
+        .set_payload(body);
+
+    for c in cookies {
+        req = req.cookie(c);
+    }
+
+    let resp = test::call_service(app, req.to_request()).await;
+    assert!(
+        resp.status().is_success(),
+        "an escaped key must not hide the token"
+    );
+}
+
+async fn case_json_duplicate_token_field_takes_last<S>(pattern: CsrfPattern, app: &S)
+where
+    S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
+{
+    let (token, cookies) = token_and_cookies_for(app, &pattern).await;
+    let body = format!(r#"{{"csrf_token":"decoy","csrf_token":"{token}"}}"#);
+
+    let mut req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header(ContentType::json())
+        .set_payload(body);
+
+    for c in cookies {
+        req = req.cookie(c);
+    }
+
+    let resp = test::call_service(app, req.to_request()).await;
+    assert!(resp.status().is_success());
+}
+
+async fn case_json_mixed_type_duplicate_rejected<S>(pattern: CsrfPattern, app: &S)
+where
+    S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
+{
+    let (token, cookies) = token_and_cookies_for(app, &pattern).await;
+    let body = format!(r#"{{"csrf_token":123,"csrf_token":"{token}"}}"#);
+
+    let mut req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header(ContentType::json())
+        .set_payload(body);
+
+    for c in cookies {
+        req = req.cookie(c);
+    }
+
+    let resp = test::call_service(app, req.to_request()).await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "a non-string occurrence must fail closed"
+    );
+}
+
+async fn case_json_trailing_content_rejected<S>(pattern: CsrfPattern, app: &S)
+where
+    S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
+{
+    let (token, cookies) = token_and_cookies_for(app, &pattern).await;
+    let body = format!(r#"{{"csrf_token":"{token}"}} trailing"#);
+
+    let mut req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header(ContentType::json())
+        .set_payload(body);
+
+    for c in cookies {
+        req = req.cookie(c);
+    }
+
+    let resp = test::call_service(app, req.to_request()).await;
+    assert_eq!(
+        resp.status(),
+        400,
+        "a token must not be read out of a malformed document"
+    );
+}
+
+async fn case_json_non_object_body_rejected<S>(pattern: CsrfPattern, app: &S)
+where
+    S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
+{
+    let (token, cookies) = token_and_cookies_for(app, &pattern).await;
+    let mut req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header(ContentType::json())
+        .set_payload(format!(r#"["{token}"]"#));
+
+    for c in cookies {
+        req = req.cookie(c);
+    }
+
+    let resp = test::call_service(app, req.to_request()).await;
+    assert_eq!(resp.status(), 400);
+}
+
+async fn case_json_non_string_token_rejected<S>(pattern: CsrfPattern, app: &S)
+where
+    S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
+{
+    let (_token, cookies) = token_and_cookies_for(app, &pattern).await;
+    let mut req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header(ContentType::json())
+        .set_payload(r#"{"csrf_token":12345}"#);
+
+    for c in cookies {
+        req = req.cookie(c);
+    }
+
+    let resp = test::call_service(app, req.to_request()).await;
+    assert_eq!(resp.status(), 400);
+}
+
+async fn case_form_percent_encoded_token<S>(pattern: CsrfPattern, app: &S)
+where
+    S: Service<Request, Response = ServiceResponse<EitherBody<BoxBody>>, Error = actix_web::Error>,
+{
+    let (token, cookies) = token_and_cookies_for(app, &pattern).await;
+    let encoded = token.replace('.', "%2E");
+    let form = format!("other=a%20b&csrf_token={encoded}");
+
+    let mut req = test::TestRequest::post()
+        .uri("/submit")
+        .insert_header(ContentType::form_url_encoded())
+        .set_payload(form);
+
+    for c in cookies {
+        req = req.cookie(c);
+    }
+
+    let resp = test::call_service(app, req.to_request()).await;
+    assert!(
+        resp.status().is_success(),
+        "percent-encoded token must decode"
+    );
+}
+
 fn multipart_upload_to(uri: &str) -> test::TestRequest {
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{MULTIPART_BOUNDARY}\r\n").as_bytes());
@@ -470,4 +621,39 @@ for_patterns!(
     param_token_uniqueness_double,
     param_token_uniqueness_sync,
     case_token_uniqueness
+);
+for_patterns!(
+    param_json_escaped_key_double,
+    param_json_escaped_key_sync,
+    case_json_token_after_escaped_key
+);
+for_patterns!(
+    param_json_duplicate_field_double,
+    param_json_duplicate_field_sync,
+    case_json_duplicate_token_field_takes_last
+);
+for_patterns!(
+    param_json_mixed_type_duplicate_double,
+    param_json_mixed_type_duplicate_sync,
+    case_json_mixed_type_duplicate_rejected
+);
+for_patterns!(
+    param_json_trailing_content_double,
+    param_json_trailing_content_sync,
+    case_json_trailing_content_rejected
+);
+for_patterns!(
+    param_json_non_object_double,
+    param_json_non_object_sync,
+    case_json_non_object_body_rejected
+);
+for_patterns!(
+    param_json_non_string_double,
+    param_json_non_string_sync,
+    case_json_non_string_token_rejected
+);
+for_patterns!(
+    param_form_encoded_token_double,
+    param_form_encoded_token_sync,
+    case_form_percent_encoded_token
 );
