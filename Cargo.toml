@@ -1,6 +1,6 @@
 [package]
 name = "actix-csrf-middleware"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 license = "MIT"
 authors = ["Andrei Kocherign <zeek@tuta.com>"]
@@ -30,8 +30,8 @@ sha2 = "0.11"
 hmac = "0.13"
 hex = "0.4"
 subtle = "2.6"
+serde = "1.0"
 serde_json = "1.0"
-serde_urlencoded = "0.7"
 log = "0.4"
 url = "2.5"
 zeroize = "1"
@@ -40,4 +40,13 @@ zeroize = "1"
 actix-rt = "2"
 actix-multipart = "0.7"
 actix-web = { version = "4", default-features = false, features = ["macros"] }
+criterion = "0.8"
 proptest = "1"
+
+[[bench]]
+name = "e2e"
+harness = false
+
+[[bench]]
+name = "alloc"
+harness = false
