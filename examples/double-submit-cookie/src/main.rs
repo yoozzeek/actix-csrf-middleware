@@ -2,6 +2,7 @@ use actix_csrf_middleware::{
     CsrfError, CsrfMiddleware, CsrfMiddlewareConfig, CsrfToken, DEFAULT_CSRF_TOKEN_FIELD,
 };
 use actix_web::dev::ServiceResponse;
+use actix_web::http::header;
 use actix_web::middleware::{ErrorHandlerResponse, ErrorHandlers};
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 
@@ -20,14 +21,20 @@ fn render_csrf_error<B>(res: ServiceResponse<B>) -> actix_web::Result<ErrorHandl
     };
 
     let status = res.status();
-    let (req, _) = res.into_parts();
+    let (req, original) = res.into_parts();
 
-    let rendered = HttpResponse::build(status)
+    let mut rendered = HttpResponse::build(status)
         .content_type("text/html; charset=utf-8")
         .body(format!(
             "<!doctype html><h1>Request blocked</h1>\
              <p>CSRF check failed: <code>{code}</code></p>"
         ));
+
+    for cookie in original.headers().get_all(header::SET_COOKIE) {
+        rendered
+            .headers_mut()
+            .append(header::SET_COOKIE, cookie.clone());
+    }
 
     Ok(ErrorHandlerResponse::Response(
         ServiceResponse::new(req, rendered).map_into_right_body(),
